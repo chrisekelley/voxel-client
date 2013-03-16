@@ -2,11 +2,9 @@ var url = require('url')
 var websocket = require('websocket-stream')
 var engine = require('voxel-engine')
 var duplexEmitter = require('duplex-emitter')
-var toolbar = require('toolbar')
 var randomName = require('./randomname')
 var crunch = require('voxel-crunch')
 var emitChat = require('./chat')
-var blockSelector = toolbar({el: '#tools'})
 var highlight = require('voxel-highlight')
 var skin = require('minecraft-skin')
 var player = require('voxel-player')
@@ -19,6 +17,7 @@ var lerpPercent = 0.1
 
 function Client(server, options) {
   this.server = server || 'ws://' + url.parse(window.location.href).host
+  console.log("server: " + url.parse(window.location.href).host)
   this.others = {}
   this.connect(server)
 }
@@ -98,10 +97,6 @@ function createGame(options) {
   viking.possess()
   
   highlight(game)
-  
-  blockSelector.on('select', function(material) {
-    currentMaterial = +material
-  })
   
   game.on('fire', function (target, state) {
     var vec = game.cameraVector()

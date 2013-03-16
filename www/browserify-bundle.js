@@ -2013,8 +2013,6 @@ require.define("/node_modules/voxel-engine/package.json",function(require,module
 require.define("/node_modules/voxel-engine/index.js",function(require,module,exports,__dirname,__filename,process,global){var voxel = require('voxel')
 var voxelMesh = require('voxel-mesh')
 var voxelChunks = require('voxel-chunks')
-var control = require('voxel-control')
-
 var THREE = require('three')
 var Stats = require('./lib/stats')
 var Detector = require('./lib/detector')
@@ -2022,14 +2020,13 @@ var inherits = require('inherits')
 var path = require('path')
 var EventEmitter = require('events').EventEmitter
 if (process.browser) var interact = require('interact')
+var playerPhysics = require('player-physics')
 var requestAnimationFrame = require('raf')
 var collisions = require('collide-3d-tilemap')
 var aabb = require('aabb-3d')
 var SpatialEventEmitter = require('spatial-events')
 var regionChange = require('voxel-region-change')
-var kb = require('kb-controls')
-var AXES = ['x', 'y', 'z']
-var physical = require('voxel-physical')
+var AXISES = ['x', 'y', 'z']
 
 module.exports = Game
 
@@ -2051,9 +2048,8 @@ function Game(opts) {
   this.removeDistance = opts.removeDistance || this.chunkDistance + 1
   this.playerHeight = opts.playerHeight || 1.62 // gets multiplied by cubeSize
   this.meshType = opts.meshType || 'surfaceMesh'
+  this.controlOptions = opts.controlOptions || {}
   this.mesher = opts.mesher || voxel.meshers.greedy
-  this.materialType = opts.materialType || THREE.MeshLambertMaterial
-  this.materialParams = opts.materialParams || {}
   this.items = []
   this.voxels = voxel(this)
   this.chunkGroups = voxelChunks(this)  
@@ -2061,35 +2057,62 @@ function Game(opts) {
   this.width = typeof window === "undefined" ? 1 : window.innerWidth
   this.scene = new THREE.Scene()
   this.camera = this.createCamera(this.scene)
-
+  this.controls = this.createControls()
   if (!opts.lightsDisabled) this.addLights(this.scene)
+  this.controlLayouts = {
+    qwerty: {
+      87: 'moveForward', //w
+      65: 'moveLeft', //a
+      83: 'moveBackward', //s
+      68: 'moveRight', //d
+      32: 'wantsJump', //space
+    },
+    azerty: {
+      90: 'moveForward', //z
+      81: 'moveLeft', //q
+      83: 'moveBackward', //s
+      68: 'moveRight', //d
+      32: 'wantsJump', //space
+    },
+    dvorak: {
+      188: 'moveForward', //comma
+      65: 'moveLeft', //a
+      79: 'moveBackward', //o
+      69: 'moveRight', //e
+      32: 'wantsJump', //space
+    }
+  }
+  this.playerControls = opts.controlLayout ? this.controlLayouts[opts.controlLayout] : this.controlLayouts.qwerty
   this.skyColor = opts.skyColor || 0xBFD1E5
   this.fogScale = opts.fogScale || 1
+  if (!opts.controlsDisabled) this.bindControls(this.controls)
+  if (!opts.fogDisabled) this.scene.fog = new THREE.Fog( this.skyColor, 0.00025, this.worldWidth() * this.fogScale )
+  this.moveToPosition(this.startingPosition)
   this.collideVoxels = collisions(
     this.getTileAtIJK.bind(this),
     this.cubeSize,
     [Infinity, Infinity, Infinity],
     [-Infinity, -Infinity, -Infinity]
   )
-
-  this.spatial = new SpatialEventEmitter
-  this.region = regionChange(this.spatial, aabb([0, 0, 0], [this.cubeSize, this.cubeSize, this.cubeSize]), this.chunkSize)
+  this.spatial = new SpatialEventEmitter()
   this.voxelRegion = regionChange(this.spatial, this.cubeSize)
   this.chunkRegion = regionChange(this.spatial, this.cubeSize * this.chunkSize)
+  
   // contains chunks that has had an update this tick. Will be generated right before redrawing the frame
   this.chunksNeedsUpdate = {}
 
-  this.materials = require('voxel-texture')({
-    THREE: THREE,
-    texturePath: opts.texturePath || './textures/',
-    materialType: opts.materialType || THREE.MeshLambertMaterial,
-    materialParams: opts.materialParams || {}
-  })
-
+  // client side only
   if (process.browser) {
+    this.materials = require('voxel-texture')({
+      THREE: THREE,
+      texturePath: opts.texturePath || './textures/',
+      materialType: opts.materialType || THREE.MeshLambertMaterial,
+      materialParams: opts.materialParams || {}
+    })
     this.materials.load(opts.materials || [['grass', 'dirt', 'grass_dirt'], 'brick', 'dirt'])
+    this.initializeRendering()
   }
-
+  
   if (this.generateChunks) {
     self.voxels.on('missingChunk', function(chunkPos) {
       var chunk = self.voxels.generateChunk(chunkPos[0], chunkPos[1], chunkPos[2])
@@ -2097,30 +2120,6 @@ function Game(opts) {
     })
     this.voxels.requestMissingChunks(this.worldOrigin)
   }
-
-  // client side only
-  if (!process.browser) { return }
-  
-  this.initializeRendering()
-  for(var chunkIndex in this.voxels.chunks) {
-    this.showChunk(this.voxels.chunks[chunkIndex])
-  }
-
-  // player control
-  this.buttons = kb(document.body, opts.keybindings || this.defaultButtons)
-  this.buttons.disable()
-  this.optout = false
-  this.interact = interact(this.element)
-  this.interact
-      .on('attain', this.onControlChange.bind(this, true))
-      .on('release', this.onControlChange.bind(this, false))
-      .on('opt-out', this.onControlOptOut.bind(this))
-
-  opts.controls = opts.controls || {}
-  opts.controls.onfire = this.onFire.bind(this)
-  this.controls = control(this.buttons, opts.controls)
-  this.items.push(this.controls)
-  this.controlling = null
 }
 
 inherits(Game, EventEmitter)
@@ -2142,51 +2141,6 @@ Game.prototype.configureChunkLoading = function(opts) {
       return voxel.generate(low, high, self.generate)
     }
   }
-}
-
-Game.prototype.defaultButtons = {
-  'W': 'forward'
-, 'A': 'left'
-, 'S': 'backward'
-, 'D': 'right'
-, '<mouse 1>': 'fire'
-, '<mouse 2>': 'firealt'
-, '<space>': 'jump'
-, '<control>': 'alt'
-}
-
-var temporaryPosition = new THREE.Vector3
-  , temporaryVector = new THREE.Vector3
-
-Game.prototype.cameraPosition = function() {
-  temporaryPosition.multiplyScalar(0)
-  this.camera.matrixWorld.multiplyVector3(temporaryPosition)
-  return temporaryPosition  
-}
-
-Game.prototype.cameraVector = function() {
-  temporaryVector.multiplyScalar(0)
-  temporaryVector.z = -1
-  this.camera.matrixWorld.multiplyVector3(temporaryVector)
-  temporaryVector.subSelf(this.cameraPosition()).normalize()
-  return temporaryVector
-}
-
-Game.prototype.makePhysical = function(target, envelope, blocksCreation) {
-  var obj = physical(target, this.potentialCollisionSet(), envelope || new THREE.Vector3(
-    this.cubeSize / 2, this.cubeSize * 1.5, this.cubeSize / 2
-  ))
-  obj.blocksCreation = !!blocksCreation
-  return obj
-}
-
-Game.prototype.control = function(target) {
-  this.controlling = target
-  return this.controls.target(target)
-}
-
-Game.prototype.potentialCollisionSet = function() {
-  return [{ collide: this.collideTerrain.bind(this) }]
 }
 
 Game.prototype.worldWidth = function() {
@@ -2227,14 +2181,6 @@ Game.prototype.tilespaceToWorldspace = function(i, j, k) {
   }
 }
 
-Game.prototype.worldspaceToTilespace = function(pos) {
-  return {
-    i: Math.floor(pos.x / this.cubeSize),
-    j: Math.floor(pos.y / this.cubeSize),
-    k: Math.floor(pos.z / this.cubeSize)
-  }
-}
-
 Game.prototype.chunkspaceToTilespace = function(pos) {
   return {
     i: pos[0] * this.chunkSize,
@@ -2255,6 +2201,8 @@ Game.prototype.initializeRendering = function() {
   this.renderer = this.createRenderer()
   if (!this.statsDisabled) this.addStats()
   window.addEventListener('resize', this.onWindowResize.bind(this), false)
+  window.addEventListener('mousedown', this.onMouseDown.bind(this), false)
+  window.addEventListener('mouseup', this.onMouseUp.bind(this), false)
   requestAnimationFrame(window).on('data', this.tick.bind(this))
   this.chunkRegion.on('change', function(newChunk) {
     self.removeFarChunks()
@@ -2305,6 +2253,38 @@ Game.prototype.notCapable = function() {
   return false
 }
 
+Game.prototype.setupPointerLock = function(element) {
+  var self = this
+  element = element || document.body
+  if (typeof element !== 'object') element = document.querySelector(element)
+  var pointer = this.pointer = interact(element)
+  if (!pointer.pointerAvailable()) this.pointerLockDisabled = true
+  pointer.on('attain', function(movements) {
+    self.controls.enabled = true
+    movements.pipe(self.controls)
+  })
+  pointer.on('release', function() {
+    self.controls.enabled = false
+  })
+  pointer.on('error', function() {
+    // user denied pointer lock OR it's not available
+    self.pointerLockDisabled = true
+    console.error('pointerlock error')
+  })
+}
+
+Game.prototype.requestPointerLock = function(element) {
+  if (!this.pointer) this.setupPointerLock(element)
+  this.pointer.request()
+}
+
+Game.prototype.moveToPosition = function(position) {
+  var pos = this.controls.yawObject.position
+  pos.x = position.x
+  pos.y = position.y
+  pos.z = position.z
+}
+
 Game.prototype.onWindowResize = function() {
   this.camera.aspect = window.innerWidth / window.innerHeight
   this.camera.updateProjectionMatrix()
@@ -2325,110 +2305,108 @@ Game.prototype.addAABBMarker = function(aabb, color) {
   var mesh = new THREE.Mesh(geometry, material)
   mesh.position.set(aabb.x0() + aabb.width() / 2, aabb.y0() + aabb.height() / 2, aabb.z0() + aabb.depth() / 2)
   this.scene.add(mesh)
-  return mesh
-}
-
-Game.prototype.addVoxelMarker = function(i, j, k, color) {
-  var pos = this.tilespaceToWorldspace(i, j, k)
-    , bbox = aabb([pos.x, pos.y, pos.z], [this.cubeSize, this.cubeSize, this.cubeSize])
-
-  return this.addAABBMarker(bbox, color)
 }
 
 Game.prototype.addItem = function(item) {
-  if(!item.tick) {
-    var newItem = physical(
-      item.mesh,
-      this.potentialCollisionSet.bind(this),
-      new THREE.Vector3(item.size, item.size, item.size)
-    )
+  var self = this
+  self.items.push(item)
+  item.velocity = item.velocity || { x: 0, y: 0, z: 0 }
+  item.collisionRadius = item.collisionRadius || item.size
+  if (!item.width) item.width = item.size
+  if (!item.height) item.height = item.size
+  if (!item.depth) item.depth = item.width
 
-    if(item.velocity) {
-      newItem.velocity.copy(item.velocity)
-      newItem.subjectTo(new THREE.Vector3(0, -9.8/100000, 0))
-    } 
+  var ticker = item.tick
+  item.tick = function (dt) {
+    if (item.collisionRadius) {
+      var p0 = self.controls.yawObject.position.clone()
+      var p1 = self.controls.yawObject.position.clone()
+      p1.y -= 25
+      var d0 = distance(item.mesh.position, p0)
+      var d1 = distance(item.mesh.position, p1)
+      if (Math.min(d0, d1) <= item.collisionRadius) {
+        self.emit('collision', item)
+      }
+    }
 
-    newItem.repr = function() { return 'debris' }
-    newItem.mesh = item.mesh
+    if (!item.resting) {
+      var c = self.getCollisions(item.mesh.position, item)
+      if (c.bottom.length > 0) {
+        if (item.velocity.y <= 0) {
+          item.mesh.position.y -= item.velocity.y
+          item.velocity.y = 0
+          item.resting = true
+        }
+        item.velocity.x = 0
+        item.velocity.z = 0
+      } else if (c.middle.length || c.top.length) {
+        item.velocity.x *= -1
+        item.velocity.z *= -1
+      }
 
-    item = newItem 
+      item.velocity.y -= 0.003
+      item.mesh.position.x += item.velocity.x * dt
+      item.mesh.position.y += item.velocity.y * dt
+      item.mesh.position.z += item.velocity.z * dt
+    }
+
+    if (ticker) ticker(item)
   }
-
-  this.items.push(item)
-  if(item.mesh) {
-    this.scene.add(item.mesh)
-  }
+  self.scene.add(item.mesh)
 }
 
 Game.prototype.removeItem = function(item) {
   var ix = this.items.indexOf(item)
   if (ix < 0) return
   this.items.splice(ix, 1)
-  if(item.mesh) {
-    this.scene.remove(item.mesh)
-  }
+  this.scene.remove(item.mesh)
 }
 
-Game.prototype.onControlChange = function(gained, stream) {
-  console.log('control '+(gained ? 'gained' : 'lost'))
-  if(!gained && !this.optout) {
-    this.buttons.disable()
-    return
-  }
-
-  this.buttons.enable()
-  stream.pipe(this.controls.createWriteRotationStream())
+Game.prototype.onMouseDown = function(e) {
+  if (!this.controls.enabled) return
+  var intersection = this.raycast()
+  if (intersection) this.emit('mousedown', intersection, e)
 }
 
-Game.prototype.onControlOptOut = function() {
-  this.optout = true
+Game.prototype.onMouseUp = function(e) {
+  if (!this.controls.enabled) return
+  var intersection = this.raycast()
+  if (intersection) this.emit('mouseup', intersection, e)
 }
 
-Game.prototype.onFire = function(state) {
-  this.emit('fire', this.controlling, state)
-}
-
-Game.prototype.raycast = 
 Game.prototype.intersectAllMeshes = function(start, direction, maxDistance) {
-  if(!start.clone) {
-    return this.raycast(this.cameraPosition(), this.cameraVector(), 10000)
-  }
-
-  var ray = new THREE.Raycaster(start, direction, 0, maxDistance)
-    , curMaxDist = Infinity
-    , curMaxIDX = null
-    , meshes = []
-    , idx = 0
-    , intersections
-    , closest
-    , point
-
-  for(var key in this.voxels.meshes) {
-    meshes[idx++] = this.voxels.meshes[key][this.meshType]
-  }
-
-  intersections = ray.intersectObjects(meshes)
-  if(!intersections.length) {
-    return false
-  }
+  var self = this
+  var meshes = Object.keys(self.voxels.meshes).map(function(key) {
+    return self.voxels.meshes[key][self.meshType]
+  }).concat(self.chunkGroups.meshes)
   
-  for(var i = 0, len = intersections.length; i < len; ++i) {
-    if(intersections[i].distance < curMaxDist) {
-      curMaxDist = intersections[i].distance
-      curMaxIDX = i
-    }
-  }
+  var d = direction.subSelf(start).normalize()
+  var ray = new THREE.Raycaster(start, d, 0, maxDistance)
+  var intersections = ray.intersectObjects(meshes)
+  if (intersections.length === 0) return false
+  
+  var dists = intersections.map(function (i) { return i.distance })
+  var inter = intersections[dists.indexOf(Math.min.apply(null, dists))]
+  
+  var p = new THREE.Vector3()
+  p.copy(inter.point)
+  p.intersection = inter
+  p.direction = d
+  
+  var cm = self.chunkGroups.chunkMatricies[inter.object.id]
+  if (cm) p.chunkMatrix = cm
+  
+  p.x += d.x
+  p.y += d.y
+  p.z += d.z
+  return p
+}
 
-  closest = intersections[curMaxIDX]
-
-  point = new THREE.Vector3
-
-  point.copy(closest.point)
-  point.intersect = closest
-  point.direction = direction
-  point.chunkMatrix = this.chunkGroups.chunkMatricies[closest.object.id] || null
-  point.addSelf(direction)
-  return point
+Game.prototype.raycast = function(maxDistance) {
+  var start = this.controls.yawObject.position.clone()
+  var direction = this.camera.matrixWorld.multiplyVector3(new THREE.Vector3(0,0,-1))
+  var intersects = this.intersectAllMeshes(start, direction, maxDistance)
+  return intersects
 }
 
 Game.prototype.createCamera = function() {
@@ -2437,6 +2415,12 @@ Game.prototype.createCamera = function() {
   camera.lookAt(new THREE.Vector3(0, 0, 0))
   this.scene.add(camera)
   return camera
+}
+
+Game.prototype.createControls = function(camera) {
+  var controls = playerPhysics(this.camera, this.controlOptions)
+  this.scene.add( controls.yawObject )
+  return controls
 }
 
 Game.prototype.createRenderer = function() {
@@ -2466,6 +2450,115 @@ Game.prototype.addStats = function() {
   document.body.appendChild( stats.domElement )
 }
 
+Game.prototype.cameraRotation = function() {
+  var xAngle = this.controls.pitchObject.rotation.x
+  var yAngle = this.controls.yawObject.rotation.y
+  return {x: xAngle, y: yAngle}
+}
+
+Game.prototype.getCollisions = function(position, dims, checker, controls) {
+  var self = this
+  var p = position.clone()
+  var w = dims.width / 2
+  var h = dims.height / 2
+  var d = dims.depth / 2
+
+  controls = controls || this.controls
+  var rx = controls.pitchObject.rotation.x
+  var ry = controls.yawObject.rotation.y
+
+  var vertices = {
+    bottom: [
+      new THREE.Vector3(p.x - w, p.y - h, p.z - d),
+      new THREE.Vector3(p.x - w, p.y - h, p.z + d),
+      new THREE.Vector3(p.x + w, p.y - h, p.z - d),
+      new THREE.Vector3(p.x + w, p.y - h, p.z + d)
+    ],
+    middle: [
+      new THREE.Vector3(p.x - w, p.y, p.z - d),
+      new THREE.Vector3(p.x - w, p.y, p.z + d),
+      new THREE.Vector3(p.x + w, p.y, p.z - d),
+      new THREE.Vector3(p.x + w, p.y, p.z + d)
+    ],
+    top: [
+      new THREE.Vector3(p.x - w, p.y + h, p.z - d),
+      new THREE.Vector3(p.x - w, p.y + h, p.z + d),
+      new THREE.Vector3(p.x + w, p.y + h, p.z - d),
+      new THREE.Vector3(p.x + w, p.y + h, p.z + d)
+    ],
+    // -------------------------------
+    up: [ new THREE.Vector3(p.x, p.y + h, p.z) ],
+    down: [ new THREE.Vector3(p.x, p.y - h, p.z) ],
+    left: [
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry + Math.PI / 2),
+        p.y,
+        p.z + d * Math.sin(ry + Math.PI / 2)
+      ) ,
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry + Math.PI / 2),
+        p.y + h * 1.5,
+        p.z + d * Math.sin(ry + Math.PI / 2)
+      )
+    ],
+    right: [
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry - Math.PI / 2),
+        p.y,
+        p.z + d * Math.sin(ry - Math.PI / 2)
+      ),
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry - Math.PI / 2),
+        p.y + h * 1.5,
+        p.z + d * Math.sin(ry - Math.PI / 2)
+      )
+    ],
+    back: [
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry),
+        p.y,
+        p.z + d * Math.sin(ry)
+      ),
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry),
+        p.y + h * 1.5,
+        p.z + d * Math.sin(ry)
+      )
+    ],
+    forward: [
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry + Math.PI),
+        p.y,
+        p.z + d * Math.sin(ry + Math.PI)
+      ),
+      new THREE.Vector3(
+        p.x + w * Math.cos(ry + Math.PI),
+        p.y + h * 1.5,
+        p.z + d * Math.sin(ry + Math.PI)
+      )
+    ]
+  }
+
+  return {
+    bottom: vertices.bottom.map(check).filter(Boolean),
+    middle: vertices.middle.map(check).filter(Boolean),
+    top: vertices.top.map(check).filter(Boolean),
+    // ----
+    up: vertices.up.map(check).filter(Boolean),
+    down: vertices.down.map(check).filter(Boolean),
+    left: vertices.left.map(check).filter(Boolean),
+    right: vertices.right.map(check).filter(Boolean),
+    forward: vertices.forward.map(check).filter(Boolean),
+    back: vertices.back.map(check).filter(Boolean)
+  }
+
+  function check(vertex) {
+    if (checker) return checker(vertex) && vertex
+    var val = self.voxels.voxelAtPosition(vertex)
+    return val && vertex
+  }
+}
+
 Game.prototype.addLights = function(scene) {
   var ambientLight, directionalLight
   ambientLight = new THREE.AmbientLight(0xcccccc)
@@ -2475,38 +2568,41 @@ Game.prototype.addLights = function(scene) {
   scene.add( light )
 };
 
+Game.prototype.currentMesh = function() {
+  var cid = this.voxels.chunkAtPosition(this.controls.yawObject.position).join('|')
+  return this.voxels.meshes[cid]
+}
+
 Game.prototype.checkBlock = function(pos) {
-  var floored = pos.clone().multiplyScalar(1 / this.cubeSize)
-  var bbox
+  var self = this
+  var direction = self.camera.matrixWorld.multiplyVector3(new THREE.Vector3(0,0,-1))
+  var start = self.controls.yawObject.position.clone()
+  var d = direction.subSelf(start).normalize()
 
-  floored.x = Math.floor(floored.x)
-  floored.y = Math.floor(floored.y)
-  floored.z = Math.floor(floored.z)
+  var p = new THREE.Vector3()
+  p.copy(pos)
+  p.x -= 1.1 * d.x
+  p.y -= 1.1 * d.y
+  p.z -= 1.1 * d.z
+  var block = self.getBlock(p)
+  if (block) return false
 
-  bbox = aabb([floored.x * this.cubeSize, floored.y * this.cubeSize, floored.z * this.cubeSize], [this.cubeSize, this.cubeSize, this.cubeSize])
+  var voxelVector = self.voxels.voxelVector(p)
+  var vidx = self.voxels.voxelIndex(voxelVector)
+  var c = self.voxels.chunkAtPosition(p)
+  var ckey = c.join('|')
+  var chunk = self.voxels.chunks[ckey]
+  if (!chunk) return false
 
-  for (var i = 0, len = this.items.length; i < len; ++i) {
-    if (this.items[i].blocksCreation && this.items[i].aabb && bbox.intersects(this.items[i].aabb())) {
-      return
-    }
-  }
+  var aabb = this.playerAABB()
+  var bottom = {x: aabb.x0(), y: aabb.y0(), z: aabb.z0()}
+  var playerVector = self.voxels.voxelVector(bottom)
 
-  var chunkKeyArr = this.voxels.chunkAtPosition(pos)
-  var chunkKey = chunkKeyArr.join('|')
-  var chunk = this.voxels.chunks[chunkKey]
-
-  if(!chunk) {
-    return
-  }
-
-  var chunkPosition = this.chunkspaceToTilespace(chunk.position)
-  var voxelPosition = new THREE.Vector3(
-        floored.x - chunkPosition.i,
-        floored.y - chunkPosition.j,
-        floored.z - chunkPosition.k 
-      )
-
-  return {chunkIndex: chunkKey, voxelVector: voxelPosition}
+  if ( playerVector.x === voxelVector.x
+    && playerVector.y === voxelVector.y
+    && playerVector.z === voxelVector.z) return false
+  
+  return {chunkIndex: ckey, voxelVector: voxelVector, position: p}
 }
 
 Game.prototype.addChunkToNextUpdate = function(chunk) {
@@ -2570,6 +2666,7 @@ Game.prototype.showChunk = function(chunk) {
   mesh.setPosition(bounds[0][0] * cubeSize, bounds[0][1] * cubeSize, bounds[0][2] * cubeSize)
   mesh.addToScene(this.scene)
   this.materials.paint(mesh.geometry)
+  this.items.forEach(function (item) { item.resting = false })
   return mesh
 }
 
@@ -2589,43 +2686,88 @@ Game.prototype.playerAABB = function(position) {
   return bbox
 }
 
-Game.prototype.collideTerrain = function(other, bbox, vec, resting) {
-  var spatial = this.spatial
-    , vec3 = [vec.x, vec.y, vec.z]
-
-  i = 0
+Game.prototype.updatePlayerPhysics = function(bbox, controls) {
   var self = this
+  var pos = controls.yawObject.position
+  var yaw = controls.yawObject
+  var size = self.cubeSize
 
-  this.collideVoxels(bbox, vec3, function hit(axis, tile, coords, dir, edge) {
-    if(!tile) {
-      return
+  var base = [ pos.x, pos.y, pos.z ]
+  
+  var velocity = [
+    controls.velocity.x,
+    controls.velocity.y,
+    controls.velocity.z
+  ]
+  
+  var worldVector
+
+  yaw.translateX(velocity[0])
+  yaw.translateY(velocity[1])
+  yaw.translateZ(velocity[2])
+
+  worldVector = [
+    pos.x - base[0],
+    pos.y - base[1],
+    pos.z - base[2]
+  ]
+
+  yaw.translateX(-velocity[0])
+  yaw.translateY(-velocity[1])
+  yaw.translateZ(-velocity[2])
+
+  controls.freedom['y-'] = true
+
+  self.collideVoxels(bbox, worldVector, function(axis, tile, coords, dir, edgeVector) {
+    if (tile) {
+      worldVector[axis] = edgeVector
+      if (axis === 1 && dir === -1) {
+        controls.freedom['y-'] = false
+      }
+      self.spatial.emit(
+        'collide-'+AXISES[axis],
+        [worldVector[0] + base[0], worldVector[1] + base[1], worldVector[2] + base[2]],
+        tile, coords, dir
+      )
+      return true
     }
+  })  
+  
+  var newLocation = new THREE.Vector3(
+    worldVector[0] + base[0], worldVector[1] + base[1], worldVector[2] + base[2]
+  )
 
-    if(Math.abs(vec3[axis]) < Math.abs(edge)) {
-      return
-    }
+  pos.copy(newLocation)
 
-    vec3[axis] = vec[AXES[axis]] = edge
-    other.acceleration[AXES[axis]] = 0
+  self.spatial.emit('position', bbox, newLocation)
 
-    resting[AXES[axis]] = dir 
+}
 
-    other.friction[AXES[(axis + 1) % 3]] = 
-    other.friction[AXES[(axis + 2) % 3]] = axis === 1 ? 0.5 : 1.
-    return true
-  })
+Game.prototype.bindControls = function (controls) {
+  var self = this
+  var onKeyDown = function ( event ) {
+    var command = self.playerControls[event.keyCode];
+    if (command) { controls.emit('command', command, true); }
+  }
+
+  var onKeyUp = function ( event ) {
+    var command = self.playerControls[event.keyCode];
+    if (command) { controls.emit('command', command, false); }
+  }
+
+  document.addEventListener( 'keydown', onKeyDown, false )
+  document.addEventListener( 'keyup', onKeyUp, false )
 }
 
 Game.prototype.tick = function(delta) {
-  for(var i = 0, len = this.items.length; i < len; ++i) {
-    this.items[i].tick(delta)
-  }
-  if (this.materials) {
-    this.materials.tick()
-  }
-  if (Object.keys(this.chunksNeedsUpdate).length > 0) {
-    this.updateDirtyChunks()
-  }
+  var self = this
+  this.controls.tick(delta, function(controls) {
+    var bbox = self.playerAABB()
+    self.updatePlayerPhysics(bbox, controls)
+  })
+  this.items.forEach(function (item) { item.tick(delta) })
+  if (this.materials) this.materials.tick()
+  if (Object.keys(this.chunksNeedsUpdate).length > 0) this.updateDirtyChunks();
   this.emit('tick', delta)
   this.render(delta)
   stats.update()
@@ -2641,6 +2783,7 @@ function distance (a, b) {
   var z = a.z - b.z
   return Math.sqrt(x*x + y*y + z*z)
 }
+
 });
 
 require.define("/node_modules/voxel-engine/node_modules/voxel/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
@@ -40248,293 +40391,6 @@ Indexer.prototype.voxel = function (pos) {
 
 });
 
-require.define("/node_modules/voxel-engine/node_modules/voxel-control/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
-});
-
-require.define("/node_modules/voxel-engine/node_modules/voxel-control/index.js",function(require,module,exports,__dirname,__filename,process,global){module.exports = control
-
-var Stream = require('stream').Stream
-
-function control(control_state, opts) {
-  return new Control(control_state, opts)
-}
-
-function Control(state, opts) {
-  Stream.call(this)
-
-  opts = opts || {}
-
-  this.state = state
-  this._pitch_target = 
-  this._yaw_target =
-  this._roll_target =
-  this._target = null
-  this.speed = opts.speed || 0.08
-  this.max_speed = opts.maxSpeed || 0.28 
-  this.jump_max_speed = opts.jumpMaxSpeed || 0.4 
-  this.jump_max_timer = opts.jumpTimer || 200
-  this.jump_speed = opts.jumpSpeed || 0.1 
-  this.jump_timer = this.jump_timer_max
-  this.jumping = false
-  this.acceleration = opts.accelerationCurve || this.acceleration
-
-  this.fire_rate = opts.fireRate || 0
-  this.needs_discrete_fire = opts.discreteFire || false
-  this.onfire = opts.onfire || this.onfire
-  this.firing = 0
-
-  this.x_rotation_per_ms = opts.rotationXMax || opts.rotationMax || 33
-  this.y_rotation_per_ms = opts.rotationYMax || opts.rotationMax || 33
-  this.z_rotation_per_ms = opts.rotationZMax || opts.rotationMax || 33
-
-  this.x_rotation_clamp = opts.rotationXClamp || Math.PI / 2
-  this.y_rotation_clamp = opts.rotationYClamp || Infinity
-  this.z_rotation_clamp = opts.rotationZClamp || 0
-
-  this.rotation_scale = opts.rotationScale || 0.002
-
-  this.air_control = 'airControl' in opts ? opts.airControl : true
-
-  this.state.x_rotation_accum =
-  this.state.y_rotation_accum = 
-  this.state.z_rotation_accum = 0.0
-
-  this.accel_max_timer = opts.accelTimer || 200
-  this.x_accel_timer = this.accel_max_timer+0
-  this.z_accel_timer = this.accel_max_timer+0
-
-  this.readable =
-  this.writable = true
-
-  this.buffer = []
-  this.paused = false
-}
-
-var cons = Control
-  , proto = cons.prototype = new Stream
-
-proto.constructor = cons
-
-var max = Math.max
-  , min = Math.min
-  , sin = Math.sin
-  , abs = Math.abs
-  , floor = Math.floor
-  , PI = Math.PI
-
-proto.tick = function(dt) {
-  if(!this._target) {
-    return
-  }
-  var state = this.state
-    , target = this._target
-    , speed = this.speed
-    , jump_speed = this.jump_speed
-    , okay_z = abs(target.velocity.z) < this.max_speed
-    , okay_x = abs(target.velocity.x) < this.max_speed
-    , at_rest = target.atRestY()
-
-  if(!this._target) return
-
-  if(state.forward || state.backward) {
-    this.z_accel_timer = max(0, this.z_accel_timer - dt)
-  }
-  if(state.backward) {
-    if(target.velocity.z < this.max_speed)
-      target.velocity.z = max(min(this.max_speed, speed * dt * this.acceleration(this.z_accel_timer, this.accel_max_timer)), target.velocity.z)
-  } else if(state.forward) {
-    if(target.velocity.z > -this.max_speed)
-      target.velocity.z = min(max(-this.max_speed, -speed * dt * this.acceleration(this.z_accel_timer, this.accel_max_timer)), target.velocity.z)
-  } else {
-    this.z_accel_timer = this.accel_max_timer
-
-  }
- 
-
-  if(state.left || state.right) {
-    this.x_accel_timer = max(0, this.x_accel_timer - dt)
-  }
-
-  if(state.right) {
-    if(target.velocity.x < this.max_speed)
-      target.velocity.x = max(min(this.max_speed, speed * dt * this.acceleration(this.x_accel_timer, this.accel_max_timer)), target.velocity.x)
-  } else if(state.left) {
-    if(target.velocity.x > -this.max_speed)
-      target.velocity.x = min(max(-this.max_speed, -speed * dt * this.acceleration(this.x_accel_timer, this.accel_max_timer)), target.velocity.x)
-  } else {
-    this.x_accel_timer = this.accel_max_timer
-  }
-
-  if(state.jump) {
-    if(!this.jumping && !at_rest) {
-      // we're falling, we can't jump
-    } else if(at_rest > 0) {
-      // we hit our head
-      this.jumping = false
-    } else {
-      this.jumping = true
-      if(this.jump_timer > 0) {
-        target.velocity.y = min(target.velocity.y + jump_speed * min(dt, this.jump_timer), this.jump_max_speed)
-      }
-      this.jump_timer = max(this.jump_timer - dt, 0)
-    }
-  } else {
-    this.jumping = false
-  }
-  this.jump_timer = at_rest < 0 ? this.jump_max_timer : this.jump_timer
-
-  var can_fire = true
-
-  if(state.fire || state.firealt) {
-    if(this.firing && this.needs_discrete_fire) {
-      this.firing += dt
-    } else {
-      if(!this.fire_rate || floor(this.firing / this.fire_rate) !== floor((this.firing + dt) / this.fire_rate)) {
-        this.onfire(state)
-      }
-      this.firing += dt
-    }
-  } else {
-    this.firing = 0
-  }
-
-  var x_rotation = this.state.x_rotation_accum * this.rotation_scale
-    , y_rotation = this.state.y_rotation_accum * this.rotation_scale
-    , z_rotation = this.state.z_rotation_accum * this.rotation_scale
-    , pitch_target = this._pitch_target
-    , yaw_target = this._yaw_target
-    , roll_target = this._roll_target
-
-  pitch_target.rotation.x = clamp(pitch_target.rotation.x + clamp(x_rotation, this.x_rotation_per_ms), this.x_rotation_clamp)
-  yaw_target.rotation.y = clamp(yaw_target.rotation.y + clamp(y_rotation, this.y_rotation_per_ms), this.y_rotation_clamp)
-  roll_target.rotation.z = clamp(roll_target.rotation.z + clamp(z_rotation, this.z_rotation_per_ms), this.z_rotation_clamp)
-
-  if(this.listeners('data').length) {
-    this.emitUpdate()
-  }
-
-  this.state.x_rotation_accum =
-  this.state.y_rotation_accum =
-  this.state.z_rotation_accum = 0
-}
-
-proto.write = function(changes) {
-  for(var key in changes) {
-    this.state[key] = changes[key]
-  }
-}
-
-proto.end = function(deltas) {
-  if(deltas) {
-    this.write(deltas)
-  }
-}
-
-proto.createWriteRotationStream = function() {
-  var state = this.state
-    , stream = new Stream
-
-  state.x_rotation_accum =
-  state.y_rotation_accum =
-  state.z_rotation_accum = 0
-
-  stream.writable = true
-  stream.write = write
-  stream.end = end
-
-  return stream
-
-  function write(changes) {
-    state.x_rotation_accum -= changes.dy || 0
-    state.y_rotation_accum -= changes.dx || 0
-    state.z_rotation_accum += changes.dz || 0
-  }
-
-  function end(deltas) {
-    if(deltas) {
-      stream.write(deltas)
-    }
-  }
-}
-
-proto.emitUpdate = function() {
-  return this.queue({
-      x_rotation_accum: this.state.x_rotation_accum
-    , y_rotation_accum: this.state.y_rotation_accum
-    , z_rotation_accum: this.state.z_rotation_accum
-    , forward: this.state.forward
-    , backward: this.state.backward
-    , left: this.state.left
-    , right: this.state.right
-    , fire: this.state.fire
-    , firealt: this.state.firealt
-    , jump: this.state.jump
-  })
-}
-
-proto.drain = function() {
-  var buf = this.buffer
-    , data
-
-  while(buf.length && !this.paused) {
-    data = buf.shift()
-    if(null === data) {
-      return this.emit('end')
-    }
-    this.emit('data', data)
-  }
-}
-
-proto.resume = function() {
-  this.paused = false
-  this.drain()
-
-  if(!this.paused) {
-    this.emit('drain')
-  }
-  return this
-}
-
-proto.pause = function() {
-  if(this.paused) return
-
-  this.paused = true
-  this.emit('pause')
-  return this
-}
-
-proto.queue = function(data) {
-  this.buffer.push(data)
-  this.drain()
-  return this
-}
-
-proto.acceleration = function(current, max) {
-  // max -> 0
-  var pct = (max - current) / max
-  return sin(PI/2*pct)
-}
-
-proto.target = function(target) {
-  if(target) {
-    this._target = target
-    this._yaw_target = target.yaw || target
-    this._pitch_target = target.pitch || target
-    this._roll_target = target.roll || target
-  }
-  return this._target
-}
-
-proto.onfire = function(_) {
-
-}
-
-function clamp(value, to) {
-  return isFinite(to) ? max(min(value, to), -to) : value
-}
-
-});
-
 require.define("/node_modules/voxel-engine/lib/stats.js",function(require,module,exports,__dirname,__filename,process,global){/**
  * @author mrdoob / http://mrdoob.com/
  */
@@ -41525,6 +41381,135 @@ function shim(el) {
     el.msRequestFullScreen ||
     el.oRequestFullscreen ||
     el.oRequestFullScreen)
+}
+
+});
+
+require.define("/node_modules/voxel-engine/node_modules/player-physics/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {}
+});
+
+require.define("/node_modules/voxel-engine/node_modules/player-physics/index.js",function(require,module,exports,__dirname,__filename,process,global){var THREE = require('three')
+var inherits = require('inherits')
+var stream = require('stream')
+
+var PI_2 = Math.PI / 2
+
+/**
+ * based on PointerLockControls by mrdoob / http://mrdoob.com/
+ * converted to a module + stream by @maxogden and @substack
+ */
+
+module.exports = function(camera, opts) {
+  return new PlayerPhysics(camera, opts)
+}
+
+module.exports.PlayerPhysics = PlayerPhysics
+
+function PlayerPhysics(camera, opts) {
+  if (!(this instanceof PlayerPhysics)) return new PlayerPhysics(camera, opts)
+  var self = this
+  if (!opts) opts = {}
+  
+  
+  this.readable = true
+  this.writable = true
+  this.enabled = false
+  
+  this.speed = {
+    jump: ( opts.jump === undefined ? 3.25 : opts.jump ),
+    move: ( opts.move === undefined ? 0.2 : opts.move ),
+    fall: ( opts.fall === undefined ? 0.3 : opts.fall ),
+  }
+  
+  this.jumpTime = 250
+  this.jumpRemaining = 0
+
+  this.pitchObject = opts.pitchObject || new THREE.Object3D()
+  if (camera) this.pitchObject.add( camera )
+
+  this.yawObject = opts.yawObject || new THREE.Object3D()
+  this.yawObject.position.y = 10
+  this.yawObject.add( this.pitchObject )
+
+  this.moveForward = false
+  this.moveBackward = false
+  this.moveLeft = false
+  this.moveRight = false
+
+  this.freedom = {
+    'x+': true,
+    'x-': true,
+    'y+': true,
+    'y-': true,
+    'z+': true,
+    'z-': true
+  }
+  
+  this.wantsJump = false
+  this.gravityEnabled = opts.gravityEnabled === undefined ? true : !!opts.gravityEnabled
+  
+  this.velocity = opts.velocityObject || new THREE.Vector3()
+
+  this.on('command', function(command, setting) {
+    self[command] = setting
+  })  
+}
+
+inherits(PlayerPhysics, stream.Stream)
+
+PlayerPhysics.prototype.playerIsMoving = function() { 
+  var v = this.velocity
+  if (Math.abs(v.x) > 0.1 || Math.abs(v.y) > 0.1 || Math.abs(v.z) > 0.1) return true
+  return false
+}
+
+PlayerPhysics.prototype.write = function(data) {
+  if (this.enabled === false) return
+  this.applyRotationDeltas(data)
+}
+
+PlayerPhysics.prototype.end = function() {
+  this.emit('end')
+}
+
+PlayerPhysics.prototype.applyRotationDeltas = function(deltas) {
+  this.yawObject.rotation.y -= deltas.dx * 0.002
+  this.pitchObject.rotation.x -= deltas.dy * 0.002
+  this.pitchObject.rotation.x = Math.max(-PI_2, Math.min(PI_2, this.pitchObject.rotation.x))
+}
+
+PlayerPhysics.prototype.tick = function (delta, cb) {
+  if (this.enabled === false) return
+
+  delta *= 0.1
+
+  this.velocity.x += (-this.velocity.x) * 0.08 * delta
+  this.velocity.z += (-this.velocity.z) * 0.08 * delta
+
+  if (this.freedom['y-']) this.wantsJump = false
+  if (this.wantsJump && this.jumpRemaining <= 0) this.jumpRemaining = this.jumpTime
+  if (this.jumpRemaining > 0) this.jumpRemaining -= delta * 100
+  if (this.jumpRemaining > 0) {
+    if(this.gravityEnabled) this.velocity.y += this.speed.jump * delta
+  } else {
+    this.jumpRemaining = 0
+    if (this.gravityEnabled) this.velocity.y -= this.speed.fall * delta
+  }
+
+  if (this.moveForward) this.velocity.z -= this.speed.move * delta
+  if (this.moveBackward) this.velocity.z += this.speed.move * delta
+
+  if (this.moveLeft) this.velocity.x -= this.speed.move * delta
+  if (this.moveRight) this.velocity.x += this.speed.move * delta
+  
+  if (!this.freedom['x-']) this.velocity.x = Math.max(0, this.velocity.x)
+  if (!this.freedom['x+']) this.velocity.x = Math.min(0, this.velocity.x)
+  if (!this.freedom['y-']) this.velocity.y = Math.max(-0.0001, this.velocity.y)
+  if (!this.freedom['y+']) this.velocity.y = Math.min(0, this.velocity.y)
+  if (!this.freedom['z-']) this.velocity.z = Math.max(0, this.velocity.z)
+  if (!this.freedom['z+']) this.velocity.z = Math.min(0, this.velocity.z)
+  
+  if (cb) cb(this)
 }
 
 });
@@ -45148,641 +45133,6 @@ function coordinates(spatial, box, regionWidth) {
 }
 });
 
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/index.js",function(require,module,exports,__dirname,__filename,process,global){var ever = require('ever')
-  , vkey = require('vkey')
-  , max = Math.max
-
-module.exports = function(el, bindings, state) {
-  if(bindings === undefined || !el.ownerDocument) {
-    state = bindings
-    bindings = el
-    el = this.document.body
-  }
-
-  var ee = ever(el)
-    , measured = {}
-    , enabled = true
-
-  state = state || {}
-
-  // always initialize the state.
-  for(var key in bindings) {
-    if(bindings[key] === 'enabled' || bindings[key] === 'enable' || bindings[key] === 'disable') {
-      throw new Error(bindings[key]+' is reserved')
-    }
-    state[bindings[key]] = 0
-    measured[key] = 1
-  }
-
-  ee.on('keyup', wrapped(onoff(kb, false)))
-  ee.on('keydown', wrapped(onoff(kb, true)))
-  ee.on('mouseup', wrapped(onoff(mouse, false)))
-  ee.on('mousedown', wrapped(onoff(mouse, true)))
-
-  state.enabled = function() {
-    return enabled
-  }
-
-  state.enable = enable_disable(true)
-  state.disable = enable_disable(false)
-
-  return state
-
-  function clear() {
-    // always initialize the state.
-    for(var key in bindings) {
-      state[bindings[key]] = 0
-      measured[key] = 1
-    }
-  }
-
-  function enable_disable(on_or_off) {
-    return function() {
-      clear()
-      enabled = on_or_off
-      return this
-    }
-  }
-
-  function wrapped(fn) {
-    return function(ev) {
-      if(enabled) {
-        ev.preventDefault()
-        fn(ev)
-      } else {
-        return
-      }
-    }
-  }
-
-  function onoff(find, on_or_off) {
-    return function(ev) {
-      var key = find(ev)
-        , binding = bindings[key]
-
-      if(binding) {
-        state[binding] += on_or_off ? max(measured[key]--, 0) : -(measured[key] = 1)
-
-        if(!on_or_off && state[binding] < 0) {
-          state[binding] = 0
-        }
-      }
-    }
-  }
-
-  function mouse(ev) {
-    return '<mouse '+ev.which+'>'
-  }
-
-  function kb(ev) {
-    return vkey[ev.keyCode] || ev.char
-  }
-}
-
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/ever/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/ever/index.js",function(require,module,exports,__dirname,__filename,process,global){var EventEmitter = require('events').EventEmitter;
-
-module.exports = function (elem) {
-    return new Ever(elem);
-};
-
-function Ever (elem) {
-    this.element = elem;
-}
-
-Ever.prototype = new EventEmitter;
-
-Ever.prototype.on = function (name, cb, useCapture) {
-    if (!this._events) this._events = {};
-    if (!this._events[name]) this._events[name] = [];
-    this._events[name].push(cb);
-    this.element.addEventListener(name, cb, useCapture || false);
-
-    return this;
-};
-Ever.prototype.addListener = Ever.prototype.on;
-
-Ever.prototype.removeListener = function (type, listener, useCapture) {
-    if (!this._events) this._events = {};
-    this.element.removeEventListener(type, listener, useCapture || false);
-    
-    var xs = this.listeners(type);
-    var ix = xs.indexOf(listener);
-    if (ix >= 0) xs.splice(ix, 1);
-
-    return this;
-};
-
-Ever.prototype.removeAllListeners = function (type) {
-    var self = this;
-    function removeAll (t) {
-        var xs = self.listeners(t);
-        for (var i = 0; i < xs.length; i++) {
-            self.removeListener(t, xs[i]);
-        }
-    }
-    
-    if (type) {
-        removeAll(type)
-    }
-    else if (self._events) {
-        for (var key in self._events) {
-            if (key) removeAll(key);
-        }
-    }
-    return EventEmitter.prototype.removeAllListeners.apply(self, arguments);
-}
-
-var initSignatures = require('./init.json');
-
-Ever.prototype.emit = function (name, ev) {
-    if (typeof name === 'object') {
-        ev = name;
-        name = ev.type;
-    }
-    
-    if (!isEvent(ev)) {
-        var type = Ever.typeOf(name);
-        
-        var opts = ev || {};
-        if (opts.type === undefined) opts.type = name;
-        
-        ev = document.createEvent(type + 's');
-        var init = typeof ev['init' + type] === 'function'
-            ? 'init' + type : 'initEvent'
-        ;
-        
-        var sig = initSignatures[init];
-        var used = {};
-        var args = [];
-        
-        for (var i = 0; i < sig.length; i++) {
-            var key = sig[i];
-            args.push(opts[key]);
-            used[key] = true;
-        }
-        ev[init].apply(ev, args);
-        
-        // attach remaining unused options to the object
-        for (var key in opts) {
-            if (!used[key]) ev[key] = opts[key];
-        }
-    }
-    return this.element.dispatchEvent(ev);
-};
-
-function isEvent (ev) {
-    var s = Object.prototype.toString.call(ev);
-    return /\[object \S+Event\]/.test(s);
-}
-
-Ever.types = require('./types.json');
-Ever.typeOf = (function () {
-    var types = {};
-    for (var key in Ever.types) {
-        var ts = Ever.types[key];
-        for (var i = 0; i < ts.length; i++) {
-            types[ts[i]] = key;
-        }
-    }
-    
-    return function (name) {
-        return types[name] || 'Event';
-    };
-})();;
-
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/ever/init.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {
-  "initEvent" : [
-    "type",
-    "canBubble", 
-    "cancelable"
-  ],
-  "initUIEvent" : [
-    "type",
-    "canBubble", 
-    "cancelable", 
-    "view", 
-    "detail"
-  ],
-  "initMouseEvent" : [
-    "type",
-    "canBubble", 
-    "cancelable", 
-    "view", 
-    "detail", 
-    "screenX", 
-    "screenY", 
-    "clientX", 
-    "clientY", 
-    "ctrlKey", 
-    "altKey", 
-    "shiftKey", 
-    "metaKey", 
-    "button",
-    "relatedTarget"
-  ],
-  "initMutationEvent" : [
-    "type",
-    "canBubble", 
-    "cancelable", 
-    "relatedNode", 
-    "prevValue", 
-    "newValue", 
-    "attrName", 
-    "attrChange"
-  ]
-}
-;
-
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/ever/types.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {
-  "MouseEvent" : [
-    "click",
-    "mousedown",
-    "mouseup",
-    "mouseover",
-    "mousemove",
-    "mouseout"
-  ],
-  "KeyBoardEvent" : [
-    "keydown",
-    "keyup",
-    "keypress"
-  ],
-  "MutationEvent" : [
-    "DOMSubtreeModified",
-    "DOMNodeInserted",
-    "DOMNodeRemoved",
-    "DOMNodeRemovedFromDocument",
-    "DOMNodeInsertedIntoDocument",
-    "DOMAttrModified",
-    "DOMCharacterDataModified"
-  ],
-  "HTMLEvent" : [
-    "load",
-    "unload",
-    "abort",
-    "error",
-    "select",
-    "change",
-    "submit",
-    "reset",
-    "focus",
-    "blur",
-    "resize",
-    "scroll"
-  ],
-  "UIEvent" : [
-    "DOMFocusIn",
-    "DOMFocusOut",
-    "DOMActivate"
-  ]
-}
-;
-
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/vkey/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
-});
-
-require.define("/node_modules/voxel-engine/node_modules/kb-controls/node_modules/vkey/index.js",function(require,module,exports,__dirname,__filename,process,global){var ua = typeof window !== 'undefined' ? window.navigator.userAgent : ''
-  , isOSX = /OS X/.test(ua)
-  , isOpera = /Opera/.test(ua)
-  , maybeFirefox = !/like Gecko/.test(ua) && !isOpera
-
-var i, output = module.exports = {
-  0:  isOSX ? '<menu>' : '<UNK>'
-, 1:  '<mouse 1>'
-, 2:  '<mouse 2>'
-, 3:  '<break>'
-, 4:  '<mouse 3>'
-, 5:  '<mouse 4>'
-, 6:  '<mouse 5>'
-, 8:  '<backspace>'
-, 9:  '<tab>'
-, 12: '<clear>'
-, 13: '<enter>'
-, 16: '<shift>'
-, 17: '<control>'
-, 18: '<alt>'
-, 19: '<pause>'
-, 20: '<caps-lock>'
-, 21: '<ime-hangul>'
-, 23: '<ime-junja>'
-, 24: '<ime-final>'
-, 25: '<ime-kanji>'
-, 27: '<escape>'
-, 28: '<ime-convert>'
-, 29: '<ime-nonconvert>'
-, 30: '<ime-accept>'
-, 31: '<ime-mode-change>'
-, 27: '<escape>'
-, 32: '<space>'
-, 33: '<page-up>'
-, 34: '<page-down>'
-, 35: '<end>'
-, 36: '<home>'
-, 37: '<left>'
-, 38: '<up>'
-, 39: '<right>'
-, 40: '<down>'
-, 41: '<select>'
-, 42: '<print>'
-, 43: '<execute>'
-, 44: '<snapshot>'
-, 45: '<insert>'
-, 46: '<delete>'
-, 47: '<help>'
-, 91: '<meta>'  // meta-left -- no one handles left and right properly, so we coerce into one.
-, 92: '<meta>'  // meta-right
-, 93: isOSX ? '<meta>' : '<menu>'      // chrome,opera,safari all report this for meta-right (osx mbp).
-, 95: '<sleep>'
-, 106: '<num-*>'
-, 107: '<num-+>'
-, 108: '<num-enter>'
-, 109: '<num-->'
-, 110: '<num-.>'
-, 111: '<num-/>'
-, 144: '<num-lock>'
-, 145: '<scroll-lock>'
-, 160: '<shift-left>'
-, 161: '<shift-right>'
-, 162: '<control-left>'
-, 163: '<control-right>'
-, 164: '<alt-left>'
-, 165: '<alt-right>'
-, 166: '<browser-back>'
-, 167: '<browser-forward>'
-, 168: '<browser-refresh>'
-, 169: '<browser-stop>'
-, 170: '<browser-search>'
-, 171: '<browser-favorites>'
-, 172: '<browser-home>'
-
-  // ff/osx reports '<volume-mute>' for '-'
-, 173: isOSX && maybeFirefox ? '-' : '<volume-mute>'
-, 174: '<volume-down>'
-, 175: '<volume-up>'
-, 176: '<next-track>'
-, 177: '<prev-track>'
-, 178: '<stop>'
-, 179: '<play-pause>'
-, 180: '<launch-mail>'
-, 181: '<launch-media-select>'
-, 182: '<launch-app 1>'
-, 183: '<launch-app 2>'
-, 186: ';'
-, 187: '='
-, 188: ','
-, 189: '-'
-, 190: '.'
-, 191: '/'
-, 192: '`'
-, 219: '['
-, 220: '\\'
-, 221: ']'
-, 222: "'"
-, 223: '<meta>'
-, 224: '<meta>'       // firefox reports meta here.
-, 226: '<alt-gr>'
-, 229: '<ime-process>'
-, 231: isOpera ? '`' : '<unicode>'
-, 246: '<attention>'
-, 247: '<crsel>'
-, 248: '<exsel>'
-, 249: '<erase-eof>'
-, 250: '<play>'
-, 251: '<zoom>'
-, 252: '<no-name>'
-, 253: '<pa-1>'
-, 254: '<clear>'
-}
-
-for(i = 58; i < 65; ++i) {
-  output[i] = String.fromCharCode(i)
-}
-
-// 0-9
-for(i = 48; i < 58; ++i) {
-  output[i] = (i - 48)+''
-}
-
-// A-Z
-for(i = 65; i < 91; ++i) {
-  output[i] = String.fromCharCode(i)
-}
-
-// num0-9
-for(i = 96; i < 107; ++i) {
-  output[i] = '<num-'+(i - 96)+'>'
-}
-
-// F1-F24
-for(i = 112; i < 136; ++i) {
-  output[i] = 'F'+(i-111)
-}
-
-});
-
-require.define("/node_modules/voxel-engine/node_modules/voxel-physical/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"index.js"}
-});
-
-require.define("/node_modules/voxel-engine/node_modules/voxel-physical/index.js",function(require,module,exports,__dirname,__filename,process,global){module.exports = physical
-
-var aabb = require('aabb-3d')
-  , THREE = require('three')
-
-function physical(avatar, collidables, dimensions, terminal) {
-  return new Physical(avatar, collidables, dimensions, terminal)
-}
-
-function Physical(avatar, collidables, dimensions, terminal) {
-  this.avatar = avatar
-  this.terminal = terminal || new THREE.Vector3(30, 5.6, 30)
-  this.dimensions = dimensions = dimensions || new THREE.Vector3(1, 1, 1)
-  this._aabb = aabb([0, 0, 0], [dimensions.x, dimensions.y, dimensions.z])
-  this.resting = {x: false, y: false, z: false}
-  this.collidables = collidables
-  this.friction = new THREE.Vector3(1, 1, 1) 
-
-  this.rotation = this.avatar.rotation
-  this.default_friction = 1
-
-  // default yaw/pitch/roll controls to the avatar
-  this.yaw = 
-  this.pitch = 
-  this.roll = avatar
-
-  this.forces = new THREE.Vector3(0, 0, 0)
-  this.acceleration = new THREE.Vector3(0, 0, 0)
-  this.velocity = new THREE.Vector3(0, 0, 0)
-}
-
-var cons = Physical
-  , proto = cons.prototype
-  , axes = ['x', 'y', 'z']
-  , abs = Math.abs
-
-// make these *once*, so we're not generating
-// garbage for every object in the game.
-var WORLD_DESIRED = new THREE.Vector3(0, 0, 0)
-  , DESIRED = new THREE.Vector3(0, 0, 0)
-  , START = new THREE.Vector3(0, 0, 0)
-  , END = new THREE.Vector3(0, 0, 0)
-
-proto.applyWorldAcceleration = applyTo('acceleration')
-proto.applyWorldVelocity = applyTo('velocity')
-
-function applyTo(which) {
-  return function(world) {
-    var local = this.avatar.worldToLocal(world)
-    this[which].x += local.x
-    this[which].y += local.y
-    this[which].z += local.z
-  }
-}
-
-proto.tick = function(dt) {
-  var forces = this.forces
-    , acceleration = this.acceleration
-    , velocity = this.velocity
-    , terminal = this.terminal
-    , friction = this.friction
-    , desired = DESIRED
-    , world_desired = WORLD_DESIRED
-    , bbox
-    , pcs
-
-  desired.x =
-  desired.y =
-  desired.z = 
-  world_desired.x =
-  world_desired.y =
-  world_desired.z = 0
-
-  if(!this.resting.x) {
-    acceleration.x /= 8
-    acceleration.x += forces.x * dt
-
-    velocity.x += acceleration.x * dt
-    velocity.x *= friction.x
-
-    if(abs(velocity.x) < terminal.x) {
-      desired.x = (velocity.x * dt) 
-    } else if(velocity.x !== 0) {
-      desired.x = (velocity.x / abs(velocity.x)) * terminal.x
-    }
-  } else {
-    acceleration.x = velocity.x = 0
-  }
-  if(!this.resting.y) {
-    acceleration.y /= 8
-    acceleration.y += forces.y * dt
-
-    velocity.y += acceleration.y * dt
-    velocity.y *= friction.y
-
-    if(abs(velocity.y) < terminal.y) {
-      desired.y = (velocity.y * dt) 
-    } else if(velocity.y !== 0) {
-      desired.y = (velocity.y / abs(velocity.y)) * terminal.y
-    }
-  } else {
-    acceleration.y = velocity.y = 0
-  }
-  if(!this.resting.z) {
-    acceleration.z /= 8
-    acceleration.z += forces.z * dt
-
-    velocity.z += acceleration.z * dt
-    velocity.z *= friction.z
-
-    if(abs(velocity.z) < terminal.z) {
-      desired.z = (velocity.z * dt) 
-    } else if(velocity.z !== 0) {
-      desired.z = (velocity.z / abs(velocity.z)) * terminal.z
-    }
-  } else {
-    acceleration.z = velocity.z = 0
-  }
-
-  START.copy(this.avatar.position)
-  this.avatar.translateX(desired.x)
-  this.avatar.translateY(desired.y)
-  this.avatar.translateZ(desired.z)
-  END.copy(this.avatar.position)
-  this.avatar.position.copy(START)
-  world_desired.x = END.x - START.x
-  world_desired.y = END.y - START.y
-  world_desired.z = END.z - START.z
-
-  this.friction.x =
-  this.friction.y = 
-  this.friction.z = this.default_friction 
-
-  // run collisions
-  this.resting.x = 
-  this.resting.y =
-  this.resting.z = false
-
-  bbox = this.aabb()
-  pcs = this.collidables
-
-  for(var i = 0, len = pcs.length; i < len; ++i) {
-    if(pcs[i] !== this) {
-      pcs[i].collide(this, bbox, world_desired, this.resting)
-    }
-  }
-
-  // apply translation 
-  this.avatar.position.x += world_desired.x
-  this.avatar.position.y += world_desired.y
-  this.avatar.position.z += world_desired.z
-}
-
-proto.subjectTo = function(force) {
-  this.forces.x += force.x
-  this.forces.y += force.y
-  this.forces.z += force.z
-  return this
-}
-
-proto.aabb = function() {
-  return aabb(
-      [this.avatar.position.x, this.avatar.position.y, this.avatar.position.z]
-    , [this.dimensions.x, this.dimensions.y, this.dimensions.z]
-  )
-}
-
-// no object -> object collisions for now, thanks
-proto.collide = function(other, bbox, world_vec, resting) {
-  return
-}
-
-proto.atRestX = function() {
-  return this.resting.x
-}
-
-proto.atRestY = function() {
-  return this.resting.y
-}
-
-proto.atRestZ = function() {
-  return this.resting.z
-}
-
-});
-
 require.define("/node_modules/voxel-engine/node_modules/voxel-texture/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {}
 });
 
@@ -46139,6 +45489,8 @@ exports.parse = function (path) {
 
   count ++
   stream.emit('data', this.value[this.key])
+  for(var i in this.stack)
+    this.stack[i].value = {}
   }
 
   parser._onToken = parser.onToken;
@@ -46361,6 +45713,9 @@ function Parser() {
   this.mode = undefined;
   this.stack = [];
   this.state = VALUE;
+  this.bytes_remaining = 0; // number of bytes remaining in multi byte utf8 char to read after split boundary
+  this.bytes_in_sequence = 0; // bytes in multi byte utf8 char to read
+  this.temp_buffs = { "2": new Buffer(2), "3": new Buffer(3), "4": new Buffer(4) }; // for rebuilding chars split before boundary is reached
 }
 var proto = Parser.prototype;
 proto.charError = function (buffer, i) {
@@ -46395,11 +45750,30 @@ proto.write = function (buffer) {
         } else { this.charError(buffer, i); }
       }
     }else if (this.tState === STRING1){ // After open quote
-      n = buffer[i];
-      if (n >= 128) {
-        for (var j = i; buffer[j] >= 128 && j < buffer.length; j++);
-        this.string += buffer.slice(i, j).toString();
-        i = j - 1;
+      n = buffer[i]; // get current byte from buffer
+      // check for carry over of a multi byte char split between data chunks
+      // & fill temp buffer it with start of this data chunk up to the boundary limit set in the last iteration
+      if (this.bytes_remaining > 0) {
+        for (var j = 0; j < this.bytes_remaining; j++) {
+          this.temp_buffs[this.bytes_in_sequence][this.bytes_in_sequence - this.bytes_remaining + j] = buffer[j];
+        }
+        this.string += this.temp_buffs[this.bytes_in_sequence].toString();
+        this.bytes_in_sequence = this.bytes_remaining = 0;
+        i = i + j - 1;
+      } else if (this.bytes_remaining === 0 && n >= 128) { // else if no remainder bytes carried over, parse multi byte (>=128) chars one at a time
+        if ((n >= 194) && (n <= 223)) this.bytes_in_sequence = 2;
+        if ((n >= 224) && (n <= 239)) this.bytes_in_sequence = 3;
+        if ((n >= 240) && (n <= 244)) this.bytes_in_sequence = 4;
+        if ((this.bytes_in_sequence + i) > buffer.length) { // if bytes needed to complete char fall outside buffer length, we have a boundary split
+          for (var k = 0; k <= (buffer.length - 1 - i); k++) {
+            this.temp_buffs[this.bytes_in_sequence][k] = buffer[i + k]; // fill temp buffer of correct size with bytes available in this chunk
+          }
+          this.bytes_remaining = (i + this.bytes_in_sequence) - buffer.length;
+          i = buffer.length - 1;
+        } else {
+          this.string += buffer.slice(i, (i + this.bytes_in_sequence)).toString();
+          i = i + this.bytes_in_sequence - 1;
+        }
       } else if (n === 0x22) { this.tState = START; this.onToken(STRING, this.string); this.string = undefined; }
       else if (n === 0x5c) { this.tState = STRING2; }
       else if (n >= 0x20) { this.string += String.fromCharCode(n); }
@@ -46921,489 +46295,6 @@ function through (write, end) {
 
 });
 
-require.define("/node_modules/toolbar/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {}
-});
-
-require.define("/node_modules/toolbar/index.js",function(require,module,exports,__dirname,__filename,process,global){var keymaster = require('./lib/keymaster.js')
-var inherits = require('inherits')
-var events = require('events')
-var elementClass = require('element-class')
-
-var keyTable =
-  {   8 : 'backspace'
-  ,   9 : 'tab'
-  ,  13 : 'enter'
-  ,  16 : 'shift'
-  ,  17 : 'ctrl'
-  ,  18 : 'alt'
-  ,  19 : 'pausebreak'
-  ,  20 : 'capslock'
-  ,  27 : 'esc'
-  ,  32 : 'spacebar'
-  ,  33 : 'pageup'
-  ,  34 : 'pagedown'
-  ,  35 : 'end'
-  ,  36 : 'home'
-  ,  37 : 'left'
-  ,  38 : 'up'
-  ,  39 : 'right'
-  ,  40 : 'down'
-  ,  45 : 'ins'
-  ,  46 : 'del'
-  ,  48 : '0'
-  ,  49 : '1'
-  ,  50 : '2'
-  ,  51 : '3'
-  ,  52 : '4'
-  ,  53 : '5'
-  ,  54 : '6'
-  ,  55 : '7'
-  ,  56 : '8'
-  ,  57 : '9'
-  ,  65 : 'a'
-  ,  66 : 'b'
-  ,  67 : 'c'
-  ,  68 : 'd'
-  ,  69 : 'e'
-  ,  70 : 'f'
-  ,  71 : 'g'
-  ,  72 : 'h'
-  ,  73 : 'i'
-  ,  74 : 'j'
-  ,  75 : 'k'
-  ,  76 : 'l'
-  ,  77 : 'm'
-  ,  78 : 'n'
-  ,  79 : 'o'
-  ,  80 : 'p'
-  ,  81 : 'q'
-  ,  82 : 'r'
-  ,  83 : 's'
-  ,  84 : 't'
-  ,  85 : 'u'
-  ,  86 : 'v'
-  ,  87 : 'w'
-  ,  88 : 'x'
-  ,  89 : 'y'
-  ,  90 : 'z'
-  ,  93 : 'select'
-  ,  96 : 'num_0'
-  ,  97 : 'num_1'
-  ,  98 : 'num_2'
-  ,  99 : 'num_3'
-  , 100 : 'num_4'
-  , 101 : 'num_5'
-  , 102 : 'num_6'
-  , 103 : 'num_7'
-  , 104 : 'num_8'
-  , 105 : 'num_9'
-  , 106 : 'multiply'
-  , 107 : 'add'
-  , 109 : 'subtract'
-  , 110 : 'decimalpoint'
-  , 111 : 'divide'
-  , 112 : 'f1'
-  , 113 : 'f2'
-  , 114 : 'f3'
-  , 115 : 'f4'
-  , 116 : 'f5'
-  , 117 : 'f6'
-  , 118 : 'f7'
-  , 119 : 'f8'
-  , 120 : 'f9'
-  , 121 : 'f10'
-  , 122 : 'f11'
-  , 123 : 'f12'
-  , 144 : 'numlock'
-  , 145 : 'scrolllock'
-  , 186 : 'semicolon'
-  , 187 : 'equalsign'
-  , 188 : 'comma'
-  , 189 : 'dash'
-  , 190 : 'period'
-  , 191 : 'forwardslash'
-  , 192 : 'graveaccent'
-  , 219 : 'openbracket'
-  , 220 : 'backslash'
-  , 221 : 'closebraket'
-  , 222 : 'singlequote'
-}
-
-module.exports = function(opts) {
-  return new HUD(opts)
-}
-
-function HUD(opts) {
-  if (!(this instanceof HUD)) return new HUD(opts)
-  var self = this
-  if (!opts) opts = {}
-  if (opts instanceof HTMLElement) opts = {el: opts}
-  this.opts = opts
-  this.el = opts.el || 'nav'
-  if (typeof this.el !== 'object') this.el = document.querySelector(this.el)
-  this.toolbarKeys = opts.toolbarKeys || ['1','2','3','4','5','6','7','8','9','0']
-  this.bindEvents()
-}
-
-inherits(HUD, events.EventEmitter)
-
-HUD.prototype.onKeyDown = function() {
-  var self = this
-  keymaster.getPressedKeyCodes().map(function(keyCode) {
-    var pressed = keyTable[keyCode]
-    if (self.toolbarKeys.indexOf(pressed) > -1) return self.switchToolbar(pressed)
-  })
-}
-
-HUD.prototype.bindEvents = function() {
-  var self = this
-  if (!this.opts.noKeydown) window.addEventListener('keydown', this.onKeyDown.bind(this))
-  var list = this.el.querySelectorAll('li')
-  list = Array.prototype.slice.call(list);
-  list.map(function(li) { 
-    li.addEventListener('click', self.onItemClick.bind(self))
-  })
-}
-
-HUD.prototype.onItemClick = function(ev) {
-  ev.preventDefault()
-  var idx = this.toolbarIndexOf(ev.currentTarget)
-  if (idx > -1) this.switchToolbar(idx)
-}
-
-HUD.prototype.addClass = function(el, className) {
-  if (!el) return
-  return elementClass(el).add(className)
-}
-
-HUD.prototype.removeClass = function(el, className) {
-  if (!el) return
-  return elementClass(el).remove(className)
-}
-
-HUD.prototype.toolbarIndexOf = function(li) {
-  var list = this.el.querySelectorAll('.tab-item') 
-  list = Array.prototype.slice.call(list)
-  var idx = list.indexOf(li)
-  if (idx > -1) ++idx
-  return idx
-}
-
-HUD.prototype.switchToolbar = function(num) {
-  this.removeClass(this.el.querySelector('.active'), 'active')
-  var selected = this.el.querySelectorAll('.tab-item')[+num-1]
-  this.addClass(selected, 'active')
-  var active = this.el.querySelector('.active .tab-label')
-  if (!active) return
-  var dataID = active.getAttribute('data-id')
-  this.emit('select', dataID ? dataID : active.innerText)
-}
-});
-
-require.define("/node_modules/toolbar/lib/keymaster.js",function(require,module,exports,__dirname,__filename,process,global){//     keymaster.js
-//     (c) 2011-2012 Thomas Fuchs
-//     keymaster.js may be freely distributed under the MIT license.
-
-;(function(global){
-  var k,
-    _handlers = {},
-    _mods = { 16: false, 18: false, 17: false, 91: false },
-    _scope = 'all',
-    // modifier keys
-    _MODIFIERS = {
-      '⇧': 16, shift: 16,
-      '⌥': 18, alt: 18, option: 18,
-      '⌃': 17, ctrl: 17, control: 17,
-      '⌘': 91, command: 91
-    },
-    // special keys
-    _MAP = {
-      backspace: 8, tab: 9, clear: 12,
-      enter: 13, 'return': 13,
-      esc: 27, escape: 27, space: 32,
-      left: 37, up: 38,
-      right: 39, down: 40,
-      del: 46, 'delete': 46,
-      home: 36, end: 35,
-      pageup: 33, pagedown: 34,
-      ',': 188, '.': 190, '/': 191,
-      '`': 192, '-': 189, '=': 187,
-      ';': 186, '\'': 222,
-      '[': 219, ']': 221, '\\': 220
-    },
-    _downKeys = [];
-
-  for(k=1;k<20;k++) _MODIFIERS['f'+k] = 111+k;
-
-  // IE doesn't support Array#indexOf, so have a simple replacement
-  function index(array, item){
-    var i = array.length;
-    while(i--) if(array[i]===item) return i;
-    return -1;
-  }
-
-  // handle keydown event
-  function dispatch(event, scope){
-    var key, handler, k, i, modifiersMatch;
-    key = event.keyCode;
-
-    if (index(_downKeys, key) == -1) {
-        _downKeys.push(key);
-    }
-
-    // if a modifier key, set the key.<modifierkeyname> property to true and return
-    if(key == 93 || key == 224) key = 91; // right command on webkit, command on Gecko
-    if(key in _mods) {
-      _mods[key] = true;
-      // 'assignKey' from inside this closure is exported to window.key
-      for(k in _MODIFIERS) if(_MODIFIERS[k] == key) assignKey[k] = true;
-      return;
-    }
-
-    // see if we need to ignore the keypress (filter() can can be overridden)
-    // by default ignore key presses if a select, textarea, or input is focused
-    if(!assignKey.filter.call(this, event)) return;
-
-    // abort if no potentially matching shortcuts found
-    if (!(key in _handlers)) return;
-
-    // for each potential shortcut
-    for (i = 0; i < _handlers[key].length; i++) {
-      handler = _handlers[key][i];
-
-      // see if it's in the current scope
-      if(handler.scope == scope || handler.scope == 'all'){
-        // check if modifiers match if any
-        modifiersMatch = handler.mods.length > 0;
-        for(k in _mods)
-          if((!_mods[k] && index(handler.mods, +k) > -1) ||
-            (_mods[k] && index(handler.mods, +k) == -1)) modifiersMatch = false;
-        // call the handler and stop the event if neccessary
-        if((handler.mods.length == 0 && !_mods[16] && !_mods[18] && !_mods[17] && !_mods[91]) || modifiersMatch){
-          if(handler.method(event, handler)===false){
-            if(event.preventDefault) event.preventDefault();
-              else event.returnValue = false;
-            if(event.stopPropagation) event.stopPropagation();
-            if(event.cancelBubble) event.cancelBubble = true;
-          }
-        }
-      }
-    }
-  };
-
-  // unset modifier keys on keyup
-  function clearModifier(event){
-    var key = event.keyCode, k,
-        i = index(_downKeys, key);
-
-    // remove key from _downKeys
-    if (i >= 0) {
-        _downKeys.splice(i, 1);
-    }
-
-    if(key == 93 || key == 224) key = 91;
-    if(key in _mods) {
-      _mods[key] = false;
-      for(k in _MODIFIERS) if(_MODIFIERS[k] == key) assignKey[k] = false;
-    }
-  };
-
-  function resetModifiers() {
-    for(k in _mods) _mods[k] = false;
-    for(k in _MODIFIERS) assignKey[k] = false;
-  }
-
-  // parse and assign shortcut
-  function assignKey(key, scope, method){
-    var keys, mods, i, mi;
-    if (method === undefined) {
-      method = scope;
-      scope = 'all';
-    }
-    key = key.replace(/\s/g,'');
-    keys = key.split(',');
-
-    if((keys[keys.length-1])=='')
-      keys[keys.length-2] += ',';
-    // for each shortcut
-    for (i = 0; i < keys.length; i++) {
-      // set modifier keys if any
-      mods = [];
-      key = keys[i].split('+');
-      if(key.length > 1){
-        mods = key.slice(0,key.length-1);
-        for (mi = 0; mi < mods.length; mi++)
-          mods[mi] = _MODIFIERS[mods[mi]];
-        key = [key[key.length-1]];
-      }
-      // convert to keycode and...
-      key = key[0]
-      key = _MAP[key] || key.toUpperCase().charCodeAt(0);
-      // ...store handler
-      if (!(key in _handlers)) _handlers[key] = [];
-      _handlers[key].push({ shortcut: keys[i], scope: scope, method: method, key: keys[i], mods: mods });
-    }
-  };
-
-  // Returns true if the key with code 'keyCode' is currently down
-  // Converts strings into key codes.
-  function isPressed(keyCode) {
-      if (typeof(keyCode)=='string') {
-          if (keyCode.length == 1) {
-              keyCode = (keyCode.toUpperCase()).charCodeAt(0);
-          } else {
-              return false;
-          }
-      }
-      return index(_downKeys, keyCode) != -1;
-  }
-
-  function getPressedKeyCodes() {
-      return _downKeys.slice(0);
-  }
-
-  function filter(event){
-    var tagName = (event.target || event.srcElement).tagName;
-    // ignore keypressed in any elements that support keyboard data input
-    return !(tagName == 'INPUT' || tagName == 'SELECT' || tagName == 'TEXTAREA');
-  }
-
-  // initialize key.<modifier> to false
-  for(k in _MODIFIERS) assignKey[k] = false;
-
-  // set current scope (default 'all')
-  function setScope(scope){ _scope = scope || 'all' };
-  function getScope(){ return _scope || 'all' };
-
-  // delete all handlers for a given scope
-  function deleteScope(scope){
-    var key, handlers, i;
-
-    for (key in _handlers) {
-      handlers = _handlers[key];
-      for (i = 0; i < handlers.length; ) {
-        if (handlers[i].scope === scope) handlers.splice(i, 1);
-        else i++;
-      }
-    }
-  };
-
-  // cross-browser events
-  function addEvent(object, event, method) {
-    if (object.addEventListener)
-      object.addEventListener(event, method, false);
-    else if(object.attachEvent)
-      object.attachEvent('on'+event, function(){ method(window.event) });
-  };
-
-  // set the handlers globally on document
-  addEvent(document, 'keydown', function(event) { dispatch(event, _scope) }); // Passing _scope to a callback to ensure it remains the same by execution. Fixes #48
-  addEvent(document, 'keyup', clearModifier);
-
-  // reset modifiers to false whenever the window is (re)focused.
-  addEvent(window, 'focus', resetModifiers);
-
-  // store previously defined key
-  var previousKey = global.key;
-
-  // restore previously defined key and return reference to our key object
-  function noConflict() {
-    var k = global.key;
-    global.key = previousKey;
-    return k;
-  }
-
-  // set window.key and window.key.set/get/deleteScope, and the default filter
-  global.key = assignKey;
-  global.key.setScope = setScope;
-  global.key.getScope = getScope;
-  global.key.deleteScope = deleteScope;
-  global.key.filter = filter;
-  global.key.isPressed = isPressed;
-  global.key.getPressedKeyCodes = getPressedKeyCodes;
-  global.key.noConflict = noConflict;
-
-  if(typeof module !== 'undefined') module.exports = global.key;
-
-})(this);
-});
-
-require.define("/node_modules/toolbar/node_modules/inherits/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"./inherits.js"}
-});
-
-require.define("/node_modules/toolbar/node_modules/inherits/inherits.js",function(require,module,exports,__dirname,__filename,process,global){module.exports = inherits
-
-function inherits (c, p, proto) {
-  proto = proto || {}
-  var e = {}
-  ;[c.prototype, proto].forEach(function (s) {
-    Object.getOwnPropertyNames(s).forEach(function (k) {
-      e[k] = Object.getOwnPropertyDescriptor(s, k)
-    })
-  })
-  c.prototype = Object.create(p.prototype, e)
-  c.super = p
-}
-
-//function Child () {
-//  Child.super.call(this)
-//  console.error([this
-//                ,this.constructor
-//                ,this.constructor === Child
-//                ,this.constructor.super === Parent
-//                ,Object.getPrototypeOf(this) === Child.prototype
-//                ,Object.getPrototypeOf(Object.getPrototypeOf(this))
-//                 === Parent.prototype
-//                ,this instanceof Child
-//                ,this instanceof Parent])
-//}
-//function Parent () {}
-//inherits(Child, Parent)
-//new Child
-
-});
-
-require.define("/node_modules/toolbar/node_modules/element-class/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {}
-});
-
-require.define("/node_modules/toolbar/node_modules/element-class/index.js",function(require,module,exports,__dirname,__filename,process,global){module.exports = function(opts) {
-  return new ElementClass(opts)
-}
-
-function ElementClass(opts) {
-  if (!(this instanceof ElementClass)) return new ElementClass(opts)
-  var self = this
-  if (!opts) opts = {}
-  if (opts instanceof HTMLElement) opts = {el: opts}
-  this.opts = opts
-  this.el = opts.el || document.body
-  if (typeof this.el !== 'object') this.el = document.querySelector(this.el)
-}
-
-ElementClass.prototype.add = function(className) {
-  var el = this.el
-  if (!el) return
-  if (el.className === "") return el.className = className
-  var classes = el.className.split(' ')
-  if (classes.indexOf(className) > -1) return classes
-  classes.push(className)
-  el.className = classes.join(' ')
-  return classes
-}
-
-ElementClass.prototype.remove = function(className) {
-  var el = this.el
-  if (!el) return
-  if (el.className === "") return
-  var classes = el.className.split(' ')
-  var idx = classes.indexOf(className)
-  if (idx > -1) classes.splice(idx, 1)
-  el.className = classes.join(' ')
-  return classes
-}
-
-});
-
 require.define("/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {}
 });
 
@@ -47437,6 +46328,7 @@ require.define("/node_modules/voxel-crunch/index.js",function(require,module,exp
       ++i;
       ++l;
     }
+    console.log(l, v);
     while(l >= 128) {
       runs.push(128 + (l&0x7f));
       l >>>= 7;
@@ -47461,6 +46353,7 @@ exports.decode = function(runs, buf_len) {
       s += 7;
     }
     l += runs[ptr++] << s;
+    console.log(l);
     if(ptr >= runs.length || (cptr + l > chunk.length) ) {
       throw new Error("Chunk buffer overflow");
     }
@@ -47507,54 +46400,140 @@ require.define("/node_modules/voxel-highlight/index.js",function(require,module,
 var events = require('events')
 var _ = require('underscore')
 
-module.exports = function(game, opts) {
-  return new Highlighter(game, opts)
-}
+module.exports = Highlighter
 
 function Highlighter(game, opts) {
-  if (!opts) opts = {}
-  this.opts = opts
+  if (!(this instanceof Highlighter)) return new Highlighter(game, opts)
   this.game = game
-  this.game.on('tick', _.throttle(this.highlight.bind(this), this.opts.frequency || 100))
+  opts = opts || {}
+  var geometry = opts.geometry || new game.THREE.CubeGeometry(1, 1, 1)
+  var material = opts.material || new game.THREE.MeshBasicMaterial({
+    color: opts.color || 0x000000,
+    wireframe: true,
+    wireframeLinewidth: opts.wireframeLinewidth || 3,
+    transparent: true,
+    opacity: opts.wireframeOpacity || 0.5
+  })
+  this.mesh = new game.THREE.Mesh(geometry, material)
+  this.distance = opts.distance || 10
+  this.currVoxelPos // undefined when no voxel selected for highlight
+  this.currVoxelAdj // undefined when no adjacent voxel selected for highlight
+  this.adjacentAnimate = opts.adjacentAnimate
+  // the adjacent highlight will be active when the following returns true
+  // default: 'alt' control mapped in game.controls (e.g. hold <Ctrl> key)
+  this.adjacentActive = opts.adjacentActive || function () { return game.controls.state.alt }
+
+  // highlight cube 'easing' animation, called every tick if enabled
+  var self = this
+  if (opts.adjacentAnimate) game.on('tick', function (dt) {
+    var target
+    var rate
+    if (self.currVoxelAdj) { // animate cube from existing anchor voxel to empty adjacent position
+      target = [self.currVoxelAdj[0] + 0.5, self.currVoxelAdj[1] + 0.5, self.currVoxelAdj[2] + 0.5]
+      rate = 15
+    }
+    else if (self.currVoxelPos) { // animate cube from empty adjacent position back to anchor voxel
+      target = [self.currVoxelPos[0] + 0.5, self.currVoxelPos[1] + 0.5, self.currVoxelPos[2] + 0.5]
+      rate = 30
+    }
+    else {
+      return
+    }
+    var pos = self.mesh.position
+    if (Math.abs(target[0] - pos.x) < .1
+     && Math.abs(target[1] - pos.y) < .1
+     && Math.abs(target[2] - pos.z) < .1) {
+      pos.set(target[0], target[1], target[2])
+      return // close enough to snap and be done
+    }
+    dt = dt / 1000 // usually around .016 seconds (60 FPS)
+    pos.x += rate * dt * (target[0] - pos.x)
+    pos.y += rate * dt * (target[1] - pos.y)
+    pos.z += rate * dt * (target[2] - pos.z)
+  })
+
+  game.on('tick', _.throttle(this.highlight.bind(this), opts.frequency || 100))
 }
 
 inherits(Highlighter, events.EventEmitter)
 
-Highlighter.prototype.highlight = function() {
-  if (this.highlight) {
-    this.game.scene.remove(this.highlight)
-    this.emit('remove', this.highlight)
+Highlighter.prototype.highlight = function () {
+
+  var cp = this.game.cameraPosition()
+  var cv = this.game.cameraVector()
+  var hit = this.game.raycastVoxels(cp, cv, this.distance)
+
+  var removeAdjacent = function (self) { // remove adjacent highlight if any
+    if (!self.currVoxelAdj) return
+    self.emit('remove-adjacent', self.currVoxelAdj.slice())
+    self.currVoxelAdj = undefined
   }
-  var hit = this.game.raycast(this.opts.distance || 500)
-  if (!hit) return
-  var voxelVector = this.game.voxels.voxelVector(hit)
-  var chunk = this.game.voxels.chunkAtPosition(hit)
-  var pos = this.game.voxels.getBounds(chunk[0], chunk[1], chunk[2])[0]
-  var size = game.cubeSize
-  pos[0] = pos[0] * size
-  pos[1] = pos[1] * size
-  pos[2] = pos[2] * size
-  pos[0] += voxelVector.x * size
-  pos[1] += voxelVector.y * size
-  pos[2] += voxelVector.z * size
-  pos = new game.THREE.Vector3(pos[0] + size / 2, pos[1] + size / 2, pos[2] + size / 2)
-  var geometry = this.opts.geometry || new game.THREE.CubeGeometry( size + 0.01, size + 0.01, size + 0.01 )
-  var material = this.opts.material || new game.THREE.MeshBasicMaterial({
-    color: 0x000000,
-    wireframe: true,
-    wireframeLinewidth: this.opts.wireframeLinewidth || 3,
-    transparent: true,
-    opacity: this.opts.wireframeOpacity || 0.5
-  })
-  var cube = new game.THREE.Mesh(geometry, material)
-  cube.position.copy(pos)
-  this.highlight = cube
-  this.game.scene.add(cube)
-  this.emit('highlight', pos, cube)
+
+  // remove existing highlight if any
+  if (!hit) {
+    if (!this.currVoxelPos) return // already removed
+    this.game.scene.remove(this.mesh)
+    this.emit('remove', this.currVoxelPos.slice())
+    this.currVoxelPos = undefined
+    removeAdjacent(this)
+    return
+  }
+
+  // highlight hit block
+  var newVoxelPos = hit.voxel
+  if (!this.currVoxelPos
+    || newVoxelPos[0] !== this.currVoxelPos[0]
+    || newVoxelPos[1] !== this.currVoxelPos[1]
+    || newVoxelPos[2] !== this.currVoxelPos[2]) { // no current highlight or it moved
+
+    // move instantly
+    this.mesh.position.set(newVoxelPos[0] + 0.5, newVoxelPos[1] + 0.5, newVoxelPos[2] + 0.5)
+
+    if (this.currVoxelPos) {
+      this.emit('remove', this.currVoxelPos.slice()) // moved highlight
+    }
+    else {
+      this.game.scene.add(this.mesh) // fresh highlight
+    }
+    this.emit('highlight', newVoxelPos.slice())
+    this.currVoxelPos = newVoxelPos
+
+    removeAdjacent(this)
+  }
+
+  // if in "place block" mode, highlight adjacent voxel instead
+  if (!this.adjacentActive()) {
+    removeAdjacent(this)
+    // snap back if not animating
+    if (!this.adjacentAnimate) this.mesh.position.set(newVoxelPos[0] + 0.5, newVoxelPos[1] + 0.5, newVoxelPos[2] + 0.5)
+    return
+  }
+
+  // since we got here, we know we have a selected non-empty voxel
+  // and with an empty adjacent voxel that we can work with
+  var newVoxelAdj = hit.adjacent
+  if (!this.currVoxelAdj
+    || newVoxelAdj[0] !== this.currVoxelAdj[0]
+    || newVoxelAdj[1] !== this.currVoxelAdj[1]
+    || newVoxelAdj[2] !== this.currVoxelAdj[2]) { // no current adj highlight or it has moved
+
+    if (this.adjacentAnimate) {
+      // start at anchor block position, then ease to adjacent on async updates
+      this.mesh.position.set(newVoxelPos[0] + 0.5, newVoxelPos[1] + 0.5, newVoxelPos[2] + 0.5)
+    }
+    else {
+      // instant snap, no easing enabled
+      this.mesh.position.set(newVoxelAdj[0] + 0.5, newVoxelAdj[1] + 0.5, newVoxelAdj[2] + 0.5)
+    }
+
+    if (this.currVoxelAdj) {
+      this.emit('remove-adjacent', this.currVoxelAdj.slice()) // moved adjacent highlight
+    }
+
+    this.emit('highlight-adjacent', newVoxelAdj.slice())
+    this.currVoxelAdj = newVoxelAdj
+  }
 }
-
-
-
 });
 
 require.define("/node_modules/voxel-highlight/node_modules/inherits/package.json",function(require,module,exports,__dirname,__filename,process,global){module.exports = {"main":"./inherits.js"}
@@ -49273,38 +48252,41 @@ require.define("/client.js",function(require,module,exports,__dirname,__filename
 var websocket = require('websocket-stream')
 var engine = require('voxel-engine')
 var duplexEmitter = require('duplex-emitter')
-var toolbar = require('toolbar')
 var randomName = require('./randomname')
 var crunch = require('voxel-crunch')
 var emitChat = require('./chat')
-var blockSelector = toolbar({el: '#tools'})
 var highlight = require('voxel-highlight')
 var skin = require('minecraft-skin')
 var player = require('voxel-player')
-var emitter, playerID
-var players = {}, lastProcessedSeq = 0
+
+var playerID
+var lastProcessedSeq = 0
 var localInputs = [], connected = false, erase = true
 var currentMaterial = 1
 var lerpPercent = 0.1
 
-window.addEventListener('keydown', function (ev) {
-  if (ev.keyCode === 'X'.charCodeAt(0)) erase = !erase
-})
-function ctrlToggle (ev) { erase = !ev.ctrlKey }
-window.addEventListener('keyup', ctrlToggle)
-window.addEventListener('keydown', ctrlToggle)
+function Client(server, options) {
+  this.server = server || 'ws://' + url.parse(window.location.href).host
+  console.log("server: " + url.parse(window.location.href).host)
+  this.others = {}
+  this.connect(server)
+}
 
-var socket = websocket('ws://' + url.parse(window.location.href).host)
-socket.on('end', function() { connected = false })
-connectToGameServer(socket)
+Client.prototype.connect = function(server) {
+  var self = this
+  var socket = websocket(server)
+  socket.on('end', function() { self.connected = false })
+  this.socket = socket
+  this.bindEvents(socket)
+}
 
-function connectToGameServer(socket) {
-
-  emitter = duplexEmitter(socket)
-  connected = true
+Client.prototype.bindEvents = function(socket) {
+  var self = this
+  this.emitter = duplexEmitter(socket)
+  this.connected = true
 
   emitter.on('id', function(id) {
-    playerID = id
+    self.playerID = id
   })
   
   emitter.on('settings', function(settings) {
@@ -49365,10 +48347,6 @@ function createGame(options) {
   viking.possess()
   
   highlight(game)
-  
-  blockSelector.on('select', function(material) {
-    currentMaterial = +material
-  })
   
   game.on('fire', function (target, state) {
     var vec = game.cameraVector()
@@ -49450,7 +48428,6 @@ function updatePlayerPosition(id, update) {
 function scale( x, fromLow, fromHigh, toLow, toHigh ) {
   return ( x - fromLow ) * ( toHigh - toLow ) / ( fromHigh - fromLow ) + toLow
 }
-
 });
 require("/client.js");
 })();

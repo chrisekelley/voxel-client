@@ -1,14 +1,21 @@
 {
   "name": "voxel-client",
-  "description": "multiplayer client for voxel-server"
+  "description": "multiplayer client for voxel-server",
   "version": "0.0.1",
   "dependencies": {
     "voxel-engine": "0.5.7",
+	"voxel-highlight": "0.0.8",
+	"voxel-player": "0.0.2",
+	"minecraft-skin": "0.0.3",
     "voxel-crunch": "0.1.0",
     "websocket-stream": "0.0.5",
     "ws": "0.4.25",
     "hat": "0.0.3",
-    "duplex-emitter": "0.1.6"
+    "duplex-emitter": "0.1.6",
+  },  
+  "devDependencies": {
+    "browserify": "1.17.3",
+    "browservefy": "0.0.9"
   },
   "engines": {
     "node": "0.8.x"
