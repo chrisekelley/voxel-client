@@ -1,6 +1,7 @@
 var url = require('url')
 var websocket = require('websocket-stream')
 var engine = require('voxel-engine')
+//window.Buffer = require('buffer').Buffer; // for use with jsonparse in duplex-emitter. This does not feel right.
 var duplexEmitter = require('duplex-emitter')
 var randomName = require('./randomname')
 var crunch = require('voxel-crunch')
@@ -11,7 +12,7 @@ var player = require('voxel-player')
 
 module.exports = Client
 
-var playerID
+var emitter, playerID
 var lastProcessedSeq = 0
 var localInputs = [], connected = false, erase = true
 var currentMaterial = 1
@@ -36,14 +37,17 @@ Client.prototype.connect = function(server) {
 
 Client.prototype.bindEvents = function(socket) {
   var self = this
-  this.emitter = duplexEmitter(socket)
+  this.emitter = emitter = duplexEmitter(socket)
   this.connected = true
+  console.log("this.connected: " + this.connected)
 
   emitter.on('id', function(id) {
     self.playerID = id
+	console.log("self.playerID: " + self.playerID)
   })
   
   emitter.on('settings', function(settings) {
+	  console.log("settings: " + settings)
     settings.generateChunks = false
     window.game = game
 	attachGame(settings)
@@ -126,6 +130,7 @@ function attachGame(options) {
   // setTimeout is because three.js seems to throw errors if you add stuff too soon
   setTimeout(function() {
     emitter.on('update', function(updates) {      
+		console.log("got update:" + updates)
       Object.keys(updates.positions).map(function(player) {
         var update = updates.positions[player]
         if (player === playerID) return onServerUpdate(update) // local player
