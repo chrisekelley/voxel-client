@@ -1,7 +1,7 @@
 var url = require('url')
 var websocket = require('websocket-stream')
 var engine = require('voxel-engine')
-//window.Buffer = require('buffer').Buffer; // for use with jsonparse in duplex-emitter. This does not feel right.
+window.Buffer = require('buffer').Buffer; // for use with jsonparse in duplex-emitter. This does not feel right.
 var duplexEmitter = require('duplex-emitter')
 var randomName = require('./randomname')
 var crunch = require('voxel-crunch')
