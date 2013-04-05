@@ -3,19 +3,16 @@
   "description": "multiplayer client for voxel-server",
   "version": "0.0.1",
   "dependencies": {
-    "voxel-engine": "0.5.7",
-	"voxel-highlight": "0.0.8",
+    "voxel-engine": "0.16.3",
 	"voxel-player": "0.0.2",
-	"minecraft-skin": "0.0.3",
+	"minecraft-skin": "0.1.2",
     "voxel-crunch": "0.1.0",
     "websocket-stream": "0.0.5",
-    "ws": "0.4.25",
-    "hat": "0.0.3",
-    "duplex-emitter": "0.1.6"
+    "duplex-emitter": "0.1.8"
   },  
   "devDependencies": {
-    "browserify": "1.17.3",
-    "browservefy": "0.0.9"
+    "browserify": "2.11.0",
+    "browservefy": "0.0.10"
   },
   "scripts": {
     "start": "browservefy www/index.js:www/browserify-bundle.js 8081 -- -d"
