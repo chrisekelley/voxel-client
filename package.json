@@ -17,7 +17,7 @@
     "browserify": "1.17.3",
     "browservefy": "0.0.9"
   },
-  "engines": {
-    "node": "0.8.x"
+  "scripts": {
+    "start": "browservefy www/index.js:www/browserify-bundle.js 8081 -- -d"
   }
 }
