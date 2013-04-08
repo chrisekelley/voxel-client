@@ -31,6 +31,9 @@ function Client(server, options) {
 Client.prototype.connect = function(server) {
   var self = this
   var socket = websocket(server)
+  socket.setEncoding = function(encoding) {
+    console.log("Encoding set to: " + encoding +" to ensure compatability with duplex-emiiter. Not doing anything with it.")
+  };
   socket.on('end', function() { self.connected = false })
   this.socket = socket
   this.bindEvents(socket)
@@ -68,6 +71,7 @@ Client.prototype.bindEvents = function(socket) {
 
 function createGame(options) {
   options.controlsDisabled = false
+  console.log("voxel-client is created the game based on settings sent from the server.")
   window.game = engine(options)
 
   function sendState() {
@@ -133,11 +137,11 @@ function createGame(options) {
   // setTimeout is because three.js seems to throw errors if you add stuff too soon
   setTimeout(function() {
     emitter.on('update', function(updates) {      
-		console.log("emitted update:" + JSON.stringify(updates))
+		//console.log("emitted update:" + JSON.stringify(updates))
       Object.keys(updates.positions).map(function(player) {
         var update = updates.positions[player]
         if (player === playerID) return onServerUpdate(update) // local player
-        updatePlayerPosition(player, update) // other players
+        //updatePlayerPosition(player, update) // other players
       })
     })
   }, 1000)

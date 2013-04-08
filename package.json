@@ -8,7 +8,7 @@
 	"minecraft-skin": "0.1.2",
     "voxel-crunch": "0.1.0",
     "websocket-stream": "0.0.5",
-    "duplex-emitter": "0.1.8"
+    "duplex-emitter": "git://github.com/chrisekelley/duplex-emitter.git"
   },  
   "devDependencies": {
     "browserify": "2.11.0",
