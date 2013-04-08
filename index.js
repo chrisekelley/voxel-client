@@ -66,7 +66,7 @@ Client.prototype.bindEvents = function(socket) {
 
   // fires when server sends us voxel edits
   emitter.on('set', function(pos, val) {
-	  console.log("Server setting block - pos:" + pos + " val:" + val)
+	  console.log("Server setting block - pos:" + JSON.stringify(pos) + " val:" + val)
     game.setBlock(pos, val)
   })
 }
@@ -114,27 +114,27 @@ function createGame(options) {
   // 
   // highlight(game)
   
-  game.on('fire', function (target, state) {
-    var vec = game.cameraVector()
-    var pos = game.cameraPosition()
-    var point = game.raycast(pos, vec, 100)
-    if (!point) return
-    var erase = !state.firealt && !state.alt
-    var size = game.cubeSize
-    if (erase) {
-		console.log("Erasing point at x:" + point.x + " y:" + point.y + " z:" + point.z)
-      emitter.emit('set', {x: point.x, y: point.y, z: point.z}, 0)
-    } else {
-      var newBlock = game.checkBlock(point)
-      if (!newBlock) return
-      var direction = game.camera.matrixWorld.multiplyVector3(new game.THREE.Vector3(0,0,-1))
-      var diff = direction.subSelf(game.controls.target().yaw.position.clone()).normalize()
-      diff.multiplySelf({ x: 1, y: 1, z: 1 })
-      var p = point.clone().addSelf(diff)
-	  console.log("Client setting block - p:" + JSON.stringify(p) + " currentMaterial:" + currentMaterial)
-      emitter.emit('set', p, currentMaterial)
-    }
-  })
+  // game.on('fire', function (target, state) {
+  // 		    var vec = game.cameraVector()
+  // 		    var pos = game.cameraPosition()
+  // 		    var point = game.raycast(pos, vec, 100)
+  // 		    if (!point) return
+  // 		    var erase = !state.firealt && !state.alt
+  // 		    var size = game.cubeSize
+  // 		    if (erase) {
+  // 		console.log("Erasing point at x:" + point.x + " y:" + point.y + " z:" + point.z)
+  // 		      emitter.emit('set', {x: point.x, y: point.y, z: point.z}, 0)
+  // 		    } else {
+  // 		      var newBlock = game.checkBlock(point)
+  // 		      if (!newBlock) return
+  // 		      var direction = game.camera.matrixWorld.multiplyVector3(new game.THREE.Vector3(0,0,-1))
+  // 		      var diff = direction.subSelf(game.controls.target().yaw.position.clone()).normalize()
+  // 		      diff.multiplySelf({ x: 1, y: 1, z: 1 })
+  // 		      var p = point.clone().addSelf(diff)
+  // 			  console.log("Client setting block - p:" + JSON.stringify(p) + " currentMaterial:" + currentMaterial)
+  // 		      emitter.emit('set', p, currentMaterial)
+  // 		    }
+  // })
   
   // setTimeout is because three.js seems to throw errors if you add stuff too soon
   setTimeout(function() {
