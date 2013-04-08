@@ -1,7 +1,8 @@
 var url = require('url')
 var websocket = require('websocket-stream')
 var engine = require('voxel-engine')
-window.Buffer = require('buffer').Buffer; // for use with jsonparse in duplex-emitter. This does not feel right.
+// TODO:- Figure out why it is necessary to expose Buffer in this way. For use with jsonparse in duplex-emitter. This does not feel right.
+window.Buffer = require('buffer').Buffer;
 var duplexEmitter = require('duplex-emitter')
 var randomName = require('./randomname')
 var crunch = require('voxel-crunch')
@@ -31,6 +32,7 @@ function Client(server, options) {
 Client.prototype.connect = function(server) {
   var self = this
   var socket = websocket(server)
+  // TODO - See if maxogden is planning to implement this in websocket-stream and/or figure out why it is in duuplex-emitter.
   socket.setEncoding = function(encoding) {
     console.log("Encoding set to: " + encoding +" to ensure compatability with duplex-emiiter. Not doing anything with it.")
   };
