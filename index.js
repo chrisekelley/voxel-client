@@ -13,6 +13,7 @@ var player = require('voxel-player')
 module.exports = Client
 
 var emitter, playerID
+var players = {}
 var lastProcessedSeq = 0
 var localInputs = [], connected = false, erase = true
 var currentMaterial = 1
@@ -49,9 +50,8 @@ Client.prototype.bindEvents = function(socket) {
   emitter.on('settings', function(settings) {
 	  console.log("settings: " + settings)
     settings.generateChunks = false
-    window.game = game
-	attachGame(settings)
-    emitter.emit('atached')
+    window.game = game = createGame(settings)
+    emitter.emit('created')
     emitter.on('chunk', function(encoded, chunk) {
       var voxels = crunch.decode(encoded, chunk.length)
       chunk.voxels = voxels
@@ -61,13 +61,14 @@ Client.prototype.bindEvents = function(socket) {
 
   // fires when server sends us voxel edits
   emitter.on('set', function(pos, val) {
+	  console.log("Server setting block - pos:" + pos + " val:" + val)
     game.setBlock(pos, val)
   })
 }
 
-function attachGame(options) {
+function createGame(options) {
   options.controlsDisabled = false
-  //window.game = engine(options)
+  window.game = engine(options)
 
   function sendState() {
     if (!connected) return
@@ -115,6 +116,7 @@ function attachGame(options) {
     var erase = !state.firealt && !state.alt
     var size = game.cubeSize
     if (erase) {
+		console.log("Erasing point at x:" + point.x + " y:" + point.y + " z:" + point.z)
       emitter.emit('set', {x: point.x, y: point.y, z: point.z}, 0)
     } else {
       var newBlock = game.checkBlock(point)
@@ -123,6 +125,7 @@ function attachGame(options) {
       var diff = direction.subSelf(game.controls.target().yaw.position.clone()).normalize()
       diff.multiplySelf({ x: 1, y: 1, z: 1 })
       var p = point.clone().addSelf(diff)
+	  console.log("Client setting block - p:" + JSON.stringify(p) + " currentMaterial:" + currentMaterial)
       emitter.emit('set', p, currentMaterial)
     }
   })
@@ -130,7 +133,7 @@ function attachGame(options) {
   // setTimeout is because three.js seems to throw errors if you add stuff too soon
   setTimeout(function() {
     emitter.on('update', function(updates) {      
-		console.log("got update:" + updates)
+		console.log("emitted update:" + JSON.stringify(updates))
       Object.keys(updates.positions).map(function(player) {
         var update = updates.positions[player]
         if (player === playerID) return onServerUpdate(update) // local player
