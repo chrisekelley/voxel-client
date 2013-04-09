@@ -69,7 +69,7 @@ Client.prototype.bindEvents = function(socket) {
   // fires when server sends us voxel edits
   emitter.on('set', function(pos, val) {
 	  console.log("Server setting block - pos:" + JSON.stringify(pos) + " val:" + val)
-    game.setBlock(pos, val)
+    window.game.setBlock(pos, val)
   })
 }
 
@@ -77,8 +77,8 @@ function createGame(options) {
   options.controlsDisabled = false
   console.log("voxel-client is creating the game based on settings sent from the server.")
   window.game = game = engine(options)
-  var container = document.body
-  game.appendTo(container)
+  // var container = document.body
+//   game.appendTo(container)
 
   function sendState() {
     if (!connected) return
