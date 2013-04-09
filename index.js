@@ -147,7 +147,7 @@ function createGame(options) {
       Object.keys(updates.positions).map(function(player) {
         var update = updates.positions[player]
         if (player === playerID) return onServerUpdate(update) // local player
-        //updatePlayerPosition(player, update) // other players
+        updatePlayerPosition(player, update) // other players
       })
     })
   }, 1000)
@@ -171,14 +171,14 @@ function lerpMe(position) {
   var to = new game.THREE.Vector3()
   to.copy(position)
   var from = game.controls.target().yaw.position
-  from.copy(from.lerpSelf(to, lerpPercent))  
+  from.copy(from.lerp(to, lerpPercent))  
 }
 
 function updatePlayerPosition(id, update) {
   var pos = update.position
   var player = players[id]
   if (!player) {
-    var playerSkin = skin(game.THREE, 'viking.png')
+    var playerSkin = skin(game.THREE, 'substack.png')
     var playerMesh = playerSkin.mesh
     players[id] = playerSkin
     playerMesh.children[0].position.y = 10
@@ -191,7 +191,7 @@ function updatePlayerPosition(id, update) {
   var to = new game.THREE.Vector3()
   to.copy(pos)
   var from = playerMesh.position
-  from.copy(from.lerpSelf(to, lerpPercent))  
+  from.copy(from.lerp(to, lerpPercent))  
   
   playerMesh.position.y += 17
   playerMesh.rotation.y = update.rotation.y + (Math.PI / 2)
