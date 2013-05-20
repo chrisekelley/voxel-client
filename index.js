@@ -30,7 +30,6 @@ function Client(server, game) {
   this.connect(server, game)
   this.game
   window.others = this.others
-  this.registrationNag = 0
 }
 
 Client.prototype.connect = function(server, game) {
@@ -80,17 +79,6 @@ Client.prototype.bindEvents = function(socket, game) {
     self.game.setBlock(pos, val)
   })
 
-  // Fires when we are notified of a newUser
-  emitter.on('newUser', function(newUser) {
-    var playerId = newUser.id
-    var player = self.others[playerId]
-    if (player!= null) {
-      player.registration = newUser
-    }  else {
-      var registration = new Registration(playerId, newUser.username, newUser.gravitar)
-      self.others[playerId] = registration
-    }
-  })
 }
 
 function Registration(id, username, gravitar) {
@@ -98,6 +86,7 @@ function Registration(id, username, gravitar) {
   this.username = username
   this.gravitar = gravitar
 }
+
 
 Client.prototype.createGame = function(settings, game) {
   var self = this
@@ -140,7 +129,13 @@ Client.prototype.createGame = function(settings, game) {
       Object.keys(updates.positions).map(function(player) {
         var update = updates.positions[player]
         if (player === self.playerID) return self.onServerUpdate(update) // local player
-        self.updatePlayerPosition(player, update, emitter) // other players
+        self.updatePlayerPosition(player, update) // other players
+      })
+      Object.keys(updates.userInfo).map(function(player) {
+        var update = updates.userInfo[player]
+        if (player === self.playerID) return self.onServerUpdate(update) // local player
+        var playerSkin = this.others[player]
+        if (playerSkin != null) playerSkin.registration = update
       })
     })
   }, 1000)
@@ -165,30 +160,13 @@ Client.prototype.lerpMe = function(position) {
   from.copy(from.lerp(to, this.lerpPercent))  
 }
 
-Client.prototype.updatePlayerPosition = function(id, update, emitter) {
-  var registration
+Client.prototype.updatePlayerPosition = function(id, update) {
   var pos = update.position
   var player = this.others[id]
-
-  if ((player) && (player instanceof Registration)) {
-    registration = this.others[id]
-    player = null
-  }
-
-  if ((!player) || (player == null)) {
+  if (!player) {
     var playerSkin = skin(this.game.THREE, 'player.png', {
       scale: new this.game.THREE.Vector3(0.04, 0.04, 0.04)
     })
-    if (registration != null) playerSkin.registration = registration
-    if (playerSkin.registration == null) {
-      if (this.registrationNag > 60) {
-        this.registrationNag = 0
-        console.log("Missing registration for " + id)
-        emitter.emit('sendUser', this.others[id])
-      } else {
-        this.registrationNag++
-      }
-    }
     var playerMesh = playerSkin.mesh
     this.others[id] = playerSkin
     playerMesh.children[0].position.y = 10
