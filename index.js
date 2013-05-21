@@ -81,13 +81,6 @@ Client.prototype.bindEvents = function(socket, game) {
 
 }
 
-function Registration(id, username, gravitar) {
-  this.id = id
-  this.username = username
-  this.gravitar = gravitar
-}
-
-
 Client.prototype.createGame = function(settings, game) {
   var self = this
   var emitter = this.emitter
@@ -131,12 +124,34 @@ Client.prototype.createGame = function(settings, game) {
         if (player === self.playerID) return self.onServerUpdate(update) // local player
         self.updatePlayerPosition(player, update) // other players
       })
-      Object.keys(updates.userInfo).map(function(player) {
-        var update = updates.userInfo[player]
-        if (player === self.playerID) return self.onServerUpdate(update) // local player
-        var playerSkin = this.others[player]
-        if (playerSkin != null) playerSkin.registration = update
-      })
+
+//      Object.keys(updates.userInfo).map(function(player) {
+//        var update = updates.userInfo[player]
+//        if (player === self.playerID) return self.onServerUpdate(update) // local player
+//        var playerSkin = this.others[player]
+//        if (playerSkin != null) playerSkin.userInfo = update
+//      })
+
+      //var updateItems = Object.keys(updates)
+
+//      Object.keys(updates).map(function(updateType) {
+//        if (updateType !== "positions" && updateType !== "date") {
+//          var updateObject = updates[updateType]
+//          var updateObjectKeys = Object.keys(updateObject)
+//          updateObjectKeys.map(function(player) {
+//            var update = updateObject[player]
+//            if (player === self.playerID) return self.onServerUpdate(update) // local player
+//            var playerSkin = this.others[player]
+//            if (playerSkin != null) playerSkin[updateType] = update
+//          })
+//        } else {
+//          Object.keys(updates.positions).map(function(player) {
+//            var update = updates.positions[player]
+//            if (player === self.playerID) return self.onServerUpdate(update) // local player
+//            self.updatePlayerPosition(player, update) // other players
+//          })
+//        }
+//      })
     })
   }, 1000)
 
